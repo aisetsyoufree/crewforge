@@ -7,8 +7,8 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 ## Binding and network exposure
 
 - The server listens exclusively on `127.0.0.1` (loopback). It is never reachable from other machines on your network by default.
-- Do **not** set `CREW_FORGE_HOST=0.0.0.0` or proxy/port-forward the port. Overriding the bind address exposes a **code-execution surface** to your network — the folder browser and Edit-mode agents can read paths you give them and run arbitrary shell commands. Only bind to loopback unless you fully understand and accept that risk.
-- The folder browser and agents can read any path you give them — only run the dashboard on a trusted machine.
+- Do **not** set `CREW_FORGE_HOST=0.0.0.0` or proxy/port-forward the port. Overriding the bind address exposes a **code-execution surface** to your network — the folder browser and Edit-mode agents can read paths you give them and run arbitrary shell commands. Remote binding requires both `CREW_FORGE_ALLOW_REMOTE=1` and `CREW_FORGE_AUTH_TOKEN`; open the app with `?token=<value>` once to establish the browser session.
+- The folder browser is home-scoped by default and blocks sensitive hidden folders such as `.ssh`. Set `CREW_FORGE_ALLOW_SENSITIVE_PATHS=1` only for trusted local testing when you understand the risk.
 
 ## Repository maintainer checklist
 
@@ -20,9 +20,10 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 ## Edit mode and code execution
 
 - **EDIT mode** lets the selected agent run arbitrary shell commands (`Bash`, exec, etc.) and modify files inside the chosen workspace.
-- Use Edit mode **only with workspaces you fully trust**.
+- Use Edit mode **only with Git workspaces you fully trust**. Crew Forge blocks Edit-mode runs for non-Git folders in this beta.
 - The combination of a folder picker + agent code execution is intentionally powerful; it is effectively a controlled terminal running inside your repo.
 - Never point the dashboard at a sensitive directory (e.g. `~`, `/`, production checkouts, directories containing private keys or customer data) unless you accept the risk.
+- CLI-backed providers are spawned with a reduced environment so API-provider keys saved in Crew Forge are not passed to unrelated CLI processes.
 
 ## Credentials and data storage
 

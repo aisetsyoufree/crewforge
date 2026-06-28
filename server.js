@@ -38,6 +38,7 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const adapters = require('./adapters');
 const store = require('./lib/store');
@@ -63,17 +64,24 @@ const STATIC_ASSETS = {
 };
 const KEY_ENV = { gemini: 'GEMINI_API_KEY' };
 const CLI_BINS = { claude: 'claude', codex: 'codex', grok: 'grok' };
+const CLI_MIN_VERSION = { grok: '0.2.72' };
 const CLI_LOGIN = {
   claude: 'claude login',
   codex: 'codex login',
   grok: 'grok login --device-auth',
 };
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const RUN_TIMEOUT_MS = Number(process.env.CREW_FORGE_RUN_TIMEOUT_MS || 15 * 60 * 1000);
 const activeRuns = new Map();
 const REQUESTED_HOST = process.env.CREW_FORGE_HOST || '127.0.0.1';
-const ALLOW_REMOTE = process.env.CREW_FORGE_ALLOW_REMOTE === '1';
+const AUTH_TOKEN_ENV = process.env.CREW_FORGE_AUTH_TOKEN || '';
+const ALLOW_REMOTE = process.env.CREW_FORGE_ALLOW_REMOTE === '1' && !!AUTH_TOKEN_ENV;
+const ALLOW_SENSITIVE_PATHS = process.env.CREW_FORGE_ALLOW_SENSITIVE_PATHS === '1';
 const HOST = !isLoopbackHost(REQUESTED_HOST) && !ALLOW_REMOTE ? '127.0.0.1' : REQUESTED_HOST;
 const HOST_IS_REMOTE = !isLoopbackHost(HOST);
+const HOME = path.resolve(os.homedir());
+const SESSION_COOKIE = 'crewforge_session';
+const SESSION_TOKEN = AUTH_TOKEN_ENV || cryptoRandomToken();
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -110,6 +118,33 @@ const json = (res, code, obj) => {
   );
 };
 const reject = (res, code, message) => json(res, code, { error: message });
+function cryptoRandomToken() {
+  return crypto.randomBytes(24).toString('base64url');
+}
+function parseCookies(header) {
+  const out = {};
+  for (const part of String(header || '').split(';')) {
+    const index = part.indexOf('=');
+    if (index < 0) continue;
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    if (key) out[key] = decodeURIComponent(value);
+  }
+  return out;
+}
+function hasSessionCookie(req) {
+  return parseCookies(req.headers.cookie)[SESSION_COOKIE] === SESSION_TOKEN;
+}
+function hasRequestToken(req, url) {
+  if (!AUTH_TOKEN_ENV) return false;
+  const bearer = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+  const headerToken = req.headers['x-crewforge-token'];
+  const queryToken = url && url.searchParams.get('token');
+  return [bearer && bearer[1], headerToken, queryToken].some((token) => token === AUTH_TOKEN_ENV);
+}
+function sessionCookieHeader() {
+  return `${SESSION_COOKIE}=${encodeURIComponent(SESSION_TOKEN)}; Path=/; HttpOnly; SameSite=Strict`;
+}
 const isJsonRequest = (req) => {
   const contentType = String(req.headers['content-type'] || '').toLowerCase();
   return contentType.startsWith('application/json');
@@ -189,6 +224,7 @@ function isLoopbackHost(host) {
 
 function isAllowedLocalRequest(req, pathname) {
   const needsCheck =
+    pathname.startsWith('/api/') ||
     req.method === 'POST' ||
     req.method === 'DELETE' ||
     (req.method === 'GET' && pathname === '/api/stream');
@@ -211,6 +247,11 @@ function isAllowedLocalRequest(req, pathname) {
   }
 }
 
+function isAllowedApiSession(req, pathname, url) {
+  if (!pathname.startsWith('/api/')) return true;
+  return hasSessionCookie(req) || hasRequestToken(req, url);
+}
+
 function invalidId(res, name) {
   return json(res, 400, { error: `invalid ${name}` });
 }
@@ -229,12 +270,30 @@ function startRun(ws, sid) {
   const key = runKey(ws, sid);
   if (activeRuns.has(key)) return null;
   const controller = new AbortController();
-  activeRuns.set(key, controller);
+  const timer =
+    RUN_TIMEOUT_MS > 0
+      ? setTimeout(() => {
+          if (controller.signal.aborted) return;
+          store.append(ws, sid, {
+            kind: 'system',
+            actor: 'system',
+            type: 'status',
+            text: `Run exceeded ${Math.round(RUN_TIMEOUT_MS / 60000)} minutes and was stopped automatically`,
+            meta: { done: true, timedOut: true },
+          });
+          controller.abort();
+        }, RUN_TIMEOUT_MS)
+      : null;
+  activeRuns.set(key, { controller, timer });
   return { key, controller };
 }
 
 function finishRun(key, controller) {
-  if (activeRuns.get(key) === controller) activeRuns.delete(key);
+  const run = activeRuns.get(key);
+  if (run && run.controller === controller) {
+    if (run.timer) clearTimeout(run.timer);
+    activeRuns.delete(key);
+  }
 }
 
 // Build a compact transcript preamble so stateless CLI calls keep context.
@@ -253,22 +312,107 @@ async function commandExists(bin) {
   }
 }
 
+async function commandVersion(bin) {
+  try {
+    return String(await execFileP(bin, ['--version'], { encoding: 'utf8', timeout: 2000 })).trim();
+  } catch {
+    try {
+      return String(await execFileP(bin, ['version'], { encoding: 'utf8', timeout: 2000 })).trim();
+    } catch {
+      return '';
+    }
+  }
+}
+
+function parseVersion(text) {
+  const match = String(text || '').match(/(\d+)\.(\d+)\.(\d+)/);
+  return match ? match.slice(1).map((part) => Number(part)) : null;
+}
+
+function versionAtLeast(actual, minimum) {
+  const a = parseVersion(actual);
+  const m = parseVersion(minimum);
+  if (!a || !m) return false;
+  for (let i = 0; i < m.length; i++) {
+    if (a[i] > m[i]) return true;
+    if (a[i] < m[i]) return false;
+  }
+  return true;
+}
+
+function isInsidePath(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function sensitivePathReason(absPath, options = {}) {
+  if (ALLOW_SENSITIVE_PATHS) return '';
+  let real;
+  try {
+    real = fs.realpathSync(absPath);
+  } catch {
+    real = path.resolve(absPath);
+  }
+  if (real === path.parse(real).root) return 'the filesystem root';
+  if (real === HOME && !options.allowHomeRoot) return 'your home folder root';
+  if (!isInsidePath(real, HOME)) return 'outside your home folder';
+  const rel = path.relative(HOME, real);
+  const parts = rel.split(path.sep).filter(Boolean);
+  const sensitiveNames = new Set([
+    '.ssh',
+    '.aws',
+    '.azure',
+    '.config',
+    '.docker',
+    '.gnupg',
+    '.kube',
+    '.npmrc',
+    '.pypirc',
+    '.netrc',
+  ]);
+  const sensitive = parts.find((part) => sensitiveNames.has(part));
+  return sensitive ? `inside ${sensitive}` : '';
+}
+
+function assertSafePath(absPath, options = {}) {
+  const reason = sensitivePathReason(absPath, options);
+  if (!reason) return;
+  throw new Error(
+    `Refusing ${absPath}: ${reason}. Set CREW_FORGE_ALLOW_SENSITIVE_PATHS=1 only if you understand the risk.`
+  );
+}
+
+function isGitRepoPath(absPath) {
+  return fs.existsSync(path.join(absPath, '.git'));
+}
+
 async function providerHealth() {
   return Promise.all(
     adapters.catalog().map(async (a) => {
       let ready = false;
       let hint = '';
+      let version = '';
       if (a.kind === 'cli') {
-        ready = await commandExists(CLI_BINS[a.id] || a.id);
+        const bin = CLI_BINS[a.id] || a.id;
+        ready = await commandExists(bin);
+        if (ready) {
+          version = await commandVersion(bin);
+          const minimum = CLI_MIN_VERSION[a.id];
+          if (minimum && !versionAtLeast(version, minimum)) {
+            ready = false;
+            hint = `${a.label} CLI ${minimum}+ required; found ${version || 'unknown version'}`;
+          }
+        }
         if (!ready)
-          hint = `Install the ${a.label} CLI, then run: ${CLI_LOGIN[a.id] || `${a.id} login`}`;
+          hint =
+            hint || `Install the ${a.label} CLI, then run: ${CLI_LOGIN[a.id] || `${a.id} login`}`;
       } else if (a.kind === 'api' && a.id === 'gemini') {
         ready = !!(process.env.GEMINI_API_KEY || keys.get('gemini'));
         if (!ready) hint = 'Add a Gemini API key in Connections';
       } else {
         hint = 'Configure this provider';
       }
-      return { id: a.id, label: a.label, kind: a.kind, ready, hint };
+      return { id: a.id, label: a.label, kind: a.kind, ready, hint, version };
     })
   );
 }
@@ -277,14 +421,17 @@ const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://localhost:${PORT}`);
   const p = u.pathname;
   if (!isAllowedLocalRequest(req, p)) return reject(res, 403, 'forbidden origin');
+  if (!isAllowedApiSession(req, p, u)) return reject(res, 401, 'missing app session');
   if (req.method === 'POST' && !isJsonRequest(req)) return reject(res, 415, 'expected JSON body');
 
   try {
     if (req.method === 'GET' && p === '/') {
+      if (AUTH_TOKEN_ENV && !hasSessionCookie(req) && !hasRequestToken(req, u))
+        return reject(res, 401, 'missing app token');
       return send(
         res,
         200,
-        { 'Content-Type': 'text/html; charset=utf-8' },
+        { 'Content-Type': 'text/html; charset=utf-8', 'Set-Cookie': sessionCookieHeader() },
         fs.readFileSync(path.join(ROOT, 'public', 'index.html'))
       );
     }
@@ -341,13 +488,26 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/fs') {
       const dir = u.searchParams.get('path') || os.homedir();
       const abs = path.resolve(dir);
-      const entries = fs
-        .readdirSync(abs, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
-        .map((d) => ({ name: d.name, path: path.join(abs, d.name) }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      const isRepo = fs.existsSync(path.join(abs, '.git'));
-      return json(res, 200, { path: abs, parent: path.dirname(abs), isRepo, dirs: entries });
+      try {
+        assertSafePath(abs, { allowHomeRoot: true });
+        const entries = fs
+          .readdirSync(abs, { withFileTypes: true })
+          .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+          .map((d) => ({ name: d.name, path: path.join(abs, d.name) }))
+          .filter((entry) => !sensitivePathReason(entry.path))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const isRepo = fs.existsSync(path.join(abs, '.git'));
+        const parent = abs === HOME ? null : path.dirname(abs);
+        return json(res, 200, { path: abs, parent, isRepo, dirs: entries });
+      } catch (e) {
+        return json(res, 400, {
+          error: e.message,
+          path: abs,
+          parent: HOME,
+          isRepo: false,
+          dirs: [],
+        });
+      }
     }
 
     if (req.method === 'GET' && p === '/api/workspaces')
@@ -358,6 +518,7 @@ const server = http.createServer(async (req, res) => {
       const { path: wp } = data;
       if (!wp) return json(res, 400, { error: 'path required' });
       try {
+        assertSafePath(path.resolve(wp));
         return json(res, 200, store.addWorkspace(wp));
       } catch (e) {
         return json(res, 400, { error: e.message });
@@ -418,8 +579,8 @@ const server = http.createServer(async (req, res) => {
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
-      const controller = activeRuns.get(runKey(ws, sid));
-      if (controller && !controller.signal.aborted) controller.abort();
+      const run = activeRuns.get(runKey(ws, sid));
+      if (run && !run.controller.signal.aborted) run.controller.abort();
       store.append(ws, sid, {
         kind: 'system',
         actor: 'system',
@@ -568,6 +729,8 @@ const server = http.createServer(async (req, res) => {
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
       const team = teams.getTeam(teamId);
       if (!team) return json(res, 400, { error: 'unknown team' });
+      if (!isGitRepoPath(wsObj.path))
+        return json(res, 400, { error: 'team execution requires a git workspace' });
       if (!sid) return json(res, 400, { error: 'sid required' });
       if (!prompt) return json(res, 400, { error: 'prompt required' });
       if (!team.members || !team.members.length)
@@ -672,6 +835,8 @@ const server = http.createServer(async (req, res) => {
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
       if (!adapters.adapters[adapter]) return json(res, 400, { error: 'unknown adapter' });
+      if (mode === 'edit' && !isGitRepoPath(wsObj.path))
+        return json(res, 400, { error: 'Edit mode requires a git workspace' });
       const run = startRun(ws, sid);
       if (!run) return json(res, 409, { error: 'run already active for this session' });
 
@@ -744,13 +909,27 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  if (
+    !HOST_IS_REMOTE &&
+    !isLoopbackHost(REQUESTED_HOST) &&
+    process.env.CREW_FORGE_ALLOW_REMOTE === '1'
+  ) {
+    console.warn(
+      [
+        '',
+        'WARNING: Remote binding was requested but CREW_FORGE_AUTH_TOKEN is not set.',
+        'Crew Forge fell back to local-only binding.',
+        '',
+      ].join('\n')
+    );
+  }
   if (HOST_IS_REMOTE) {
     console.warn(
       [
         '',
         'WARNING: Crew Forge is listening on a non-loopback host.',
         'This exposes a filesystem-browsing and code-execution surface to the network.',
-        'Only do this on a trusted network, with trusted users, and CREW_FORGE_ALLOW_REMOTE=1.',
+        'Only do this on a trusted network, with trusted users, CREW_FORGE_ALLOW_REMOTE=1, and CREW_FORGE_AUTH_TOKEN set.',
         '',
       ].join('\n')
     );

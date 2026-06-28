@@ -45,6 +45,7 @@ Provider and product names are used for identification only. See [TRADEMARKS.md]
 - Provider CLIs may change their flags or stream formats; adapters can break.
 - The lead/crew workflow is early. It supports planning and task execution primitives, but the full team/task-board orchestration experience is still in progress.
 - Human review is required. Do not trust generated code without reading diffs and running tests.
+- Edit mode requires a Git workspace in this beta; use Plan mode for non-Git folders.
 - Usage metrics are observed locally and are not authoritative billing data.
 - Session history, workspace paths, teams, and API keys are stored locally under `data/` and are not encrypted.
 - The app is local-first, but prompts, code snippets, diffs, and tool output may be sent to the selected provider.
@@ -109,6 +110,8 @@ See [BETA_TESTING.md](BETA_TESTING.md) for the suggested tester flow, what to re
 Crew Forge can browse folders you select and can run edit-capable agents inside those workspaces. Treat it like a powerful local terminal.
 
 Read [SECURITY.md](SECURITY.md), [DISCLAIMER.md](DISCLAIMER.md), and [TRADEMARKS.md](TRADEMARKS.md) before using it on important repositories.
+
+By default the folder picker stays inside your home folder and hides sensitive credential/config directories. Remote binding requires an explicit auth token and is not recommended for beta testers; use `?token=<value>` once to establish a browser session.
 
 ## Development
 

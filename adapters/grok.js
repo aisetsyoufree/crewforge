@@ -2,7 +2,7 @@
 
 const { spawn } = require('child_process');
 const readline = require('readline');
-const { ev, TokenStreamer, cliExitError } = require('./base');
+const { ev, TokenStreamer, cliExitError, safeCliEnv } = require('./base');
 
 // Grok streaming-json emits token events: {type:"thought",data} {type:"text",data}
 // {type:"end",stopReason,...}. Tool/file events appear as other types during
@@ -34,7 +34,7 @@ module.exports = {
       else args.push('--tools', 'read_file,grep,list_dir');
       if (model) args.push('-m', model);
 
-      const child = spawn('grok', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn('grok', args, { stdio: ['ignore', 'pipe', 'pipe'], env: safeCliEnv() });
       const rl = readline.createInterface({ input: child.stdout });
       const stream = new TokenStreamer(onEvent);
       let finalText = '';
@@ -102,10 +102,16 @@ module.exports = {
             break;
           default:
             // unknown event types: surface as reasoning so nothing is silently lost
-            if (o.data) {
-              stream.flush();
-              onEvent(ev('reasoning', `[${o.type}] ${o.data}`, { final: true }));
-            }
+            stream.flush();
+            onEvent(
+              ev(
+                'reasoning',
+                `[${o.type || 'unknown'}] ${o.data || o.message || JSON.stringify(o)}`,
+                {
+                  final: true,
+                }
+              )
+            );
         }
       });
 

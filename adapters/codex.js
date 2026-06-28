@@ -2,7 +2,7 @@
 
 const { spawn } = require('child_process');
 const readline = require('readline');
-const { ev, cliExitError } = require('./base');
+const { ev, cliExitError, safeCliEnv } = require('./base');
 
 // Codex emits JSONL: thread.started / item.completed{item} / turn.completed{usage}
 module.exports = {
@@ -30,7 +30,7 @@ module.exports = {
       if (model) args.push('-m', model);
       args.push(prompt);
 
-      const child = spawn('codex', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn('codex', args, { stdio: ['ignore', 'pipe', 'pipe'], env: safeCliEnv() });
       const rl = readline.createInterface({ input: child.stdout });
       let finalText = '';
       let usage = null;

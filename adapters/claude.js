@@ -2,7 +2,7 @@
 
 const { spawn } = require('child_process');
 const readline = require('readline');
-const { ev, cliExitError } = require('./base');
+const { ev, cliExitError, safeCliEnv } = require('./base');
 
 const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
@@ -34,6 +34,7 @@ module.exports = {
       const child = spawn('claude', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: cwd || process.cwd(),
+        env: safeCliEnv(),
       });
       const rl = readline.createInterface({ input: child.stdout });
       let finalText = '';

@@ -6,9 +6,18 @@ Crew Forge is intended for technical beta testers who understand Git, local deve
 
 - Use a disposable or low-risk Git repository first.
 - Commit or stash your work before testing Edit mode.
+- Use a Git repository for Edit mode; non-Git folders are limited to planning/analysis.
+- Keep test workspaces under your home folder and away from hidden credential/config directories.
 - Start with one provider before testing teams.
 - Prefer Plan mode until the workspace and provider behavior look correct.
 - Keep provider dashboards available for authoritative usage and billing data.
+
+## Preflight
+
+- Confirm `node --version` is v18 or newer.
+- Confirm `git status` works in the workspace you plan to add.
+- Confirm the provider CLI you want to use is installed and logged in on the same machine running Crew Forge.
+- Confirm the app opens on a `127.0.0.1` URL unless you intentionally configured remote access with `CREW_FORGE_AUTH_TOKEN` and opened it once with `?token=<value>`.
 
 ## Updating From Earlier Local Builds
 

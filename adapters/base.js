@@ -45,6 +45,32 @@ function cliExitError(name, code, signal, stderr) {
   return `${name} exited with ${status}${tail ? `: ${tail}` : ''}`;
 }
 
+function safeCliEnv(extra) {
+  const allowed = [
+    'PATH',
+    'HOME',
+    'SHELL',
+    'TERM',
+    'TMPDIR',
+    'USER',
+    'LOGNAME',
+    'LANG',
+    'LC_ALL',
+    'SSH_AUTH_SOCK',
+    'XDG_CONFIG_HOME',
+    'XDG_CACHE_HOME',
+    'XDG_DATA_HOME',
+    'CLAUDE_CONFIG_DIR',
+    'CODEX_HOME',
+    'GROK_HOME',
+  ];
+  const env = {};
+  for (const key of allowed) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
+  return { ...env, ...(extra || {}) };
+}
+
 // Streams text tokens into consolidated sections. Adapters that emit
 // token-by-token (grok) use this; chunked adapters (codex/claude) emit directly.
 class TokenStreamer {
@@ -68,4 +94,4 @@ class TokenStreamer {
   }
 }
 
-module.exports = { ev, TokenStreamer, stderrTail, cliExitError };
+module.exports = { ev, TokenStreamer, stderrTail, cliExitError, safeCliEnv };

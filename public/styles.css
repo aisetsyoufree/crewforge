@@ -509,6 +509,50 @@ main {
 .rateBannerDismiss:hover {
   color: var(--text);
 }
+.toastStack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 36px));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
+  font-size: 12.5px;
+  line-height: 1.45;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.toast.error {
+  border-color: #5a2828;
+  color: var(--bad);
+}
+.toast.warn {
+  border-color: #5c4520;
+  color: var(--warn);
+}
+.toast button {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 2px;
+}
+.toast button:hover {
+  color: var(--text);
+}
 .usageLimited {
   display: inline-block;
   font-size: 10px;

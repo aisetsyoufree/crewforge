@@ -195,6 +195,17 @@ function setMessageBody(bodyEl, text, asMarkdown) {
   }
 }
 
+function notify(message, level = 'error') {
+  const stack = $('#toastStack');
+  if (!stack) return;
+  const toast = document.createElement('div');
+  toast.className = `toast ${level}`;
+  toast.innerHTML = `<span>${esc(message)}</span><button type="button" aria-label="Dismiss">x</button>`;
+  toast.querySelector('button').onclick = () => toast.remove();
+  stack.appendChild(toast);
+  setTimeout(() => toast.remove(), 7000);
+}
+
 async function api(p, opt) {
   const r = await fetch(p, opt);
   return r.json();
@@ -269,7 +280,7 @@ async function saveKey(e) {
   const provider = row.dataset.provider;
   const input = row.querySelector('input');
   const key = input.value.trim();
-  if (!key) return alert('Paste a key first.');
+  if (!key) return notify('Paste a key first.');
   button.disabled = true;
   const r = await api('/api/keys', {
     method: 'POST',
@@ -277,7 +288,7 @@ async function saveKey(e) {
     body: JSON.stringify({ provider, key }),
   });
   button.disabled = false;
-  if (r.error) return alert(r.error);
+  if (r.error) return notify(r.error);
   input.value = '';
   await loadConnections();
 }
@@ -288,7 +299,7 @@ async function removeKey(e) {
   button.disabled = true;
   const r = await api('/api/keys?provider=' + encodeURIComponent(provider), { method: 'DELETE' });
   button.disabled = false;
-  if (r.error) return alert(r.error);
+  if (r.error) return notify(r.error);
   await loadConnections();
 }
 $('#connectionsBtn').onclick = openConnections;
@@ -628,7 +639,7 @@ async function forgetWorkspace() {
   )
     return;
   const r = await api('/api/workspaces?id=' + encodeURIComponent(ws), { method: 'DELETE' });
-  if (r.error) return alert(r.error);
+  if (r.error) return notify(r.error);
   if (state.ws === ws) {
     state.ws = null;
     state.wsPath = null;
@@ -652,7 +663,7 @@ async function loadSessions() {
     .forEach((d) => (d.onclick = () => openSession(d.dataset.id)));
 }
 $('#newSess').onclick = async () => {
-  if (!state.ws) return alert('Add a workspace first');
+  if (!state.ws) return notify('Add a workspace first');
   const r = await api('/api/sessions', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -841,8 +852,8 @@ async function ensureSession() {
   });
 }
 async function send() {
-  if (!state.ws) return alert('Add/select a workspace first');
-  if (state.activeRun) return alert('A run is already active in this session.');
+  if (!state.ws) return notify('Add/select a workspace first');
+  if (state.activeRun) return notify('A run is already active in this session.');
   const prompt = $('#prompt').value.trim();
   if (!prompt) return;
   await ensureSession();
@@ -865,13 +876,13 @@ async function send() {
     if (r.error) {
       setRunActive(false);
       stopActivityPoll();
-      return alert(r.error);
+      return notify(r.error);
     }
     loadUsage();
   } catch (_e) {
     setRunActive(false);
     stopActivityPoll();
-    alert('Unable to start run.');
+    notify('Unable to start run.');
   }
 }
 $('#send').onclick = send;
@@ -892,14 +903,14 @@ async function stopRun() {
     });
     if (r.error) {
       $('#stop').disabled = false;
-      return alert(r.error);
+      return notify(r.error);
     }
     setRunActive(false);
     stopActivityPoll();
     loadChanges();
   } catch (_e) {
     $('#stop').disabled = false;
-    alert('Unable to stop run.');
+    notify('Unable to stop run.');
   }
 }
 $('#stop').onclick = stopRun;
@@ -1096,15 +1107,15 @@ function showReviewPick(open) {
   $('#reviewBtn').style.display = open ? 'none' : '';
 }
 $('#reviewBtn').onclick = () => {
-  if (!state.ws) return alert('Add/select a workspace first');
-  if (activity.notRepo) return alert(NOT_REPO_MSG);
+  if (!state.ws) return notify('Add/select a workspace first');
+  if (activity.notRepo) return notify(NOT_REPO_MSG);
   populateReviewModels();
   showReviewPick(true);
 };
 $('#reviewCancel').onclick = () => showReviewPick(false);
 async function startReview() {
-  if (!state.ws) return alert('Add/select a workspace first');
-  if (state.activeRun) return alert('A run is already active in this session.');
+  if (!state.ws) return notify('Add/select a workspace first');
+  if (state.activeRun) return notify('A run is already active in this session.');
   const val = $('#reviewModel').value;
   if (!val) return;
   const [reviewer, reviewerModel] = val.split('|');
@@ -1121,13 +1132,13 @@ async function startReview() {
     if (r.error) {
       setRunActive(false);
       stopActivityPoll();
-      return alert(r.error);
+      return notify(r.error);
     }
     loadUsage();
   } catch (_e) {
     setRunActive(false);
     stopActivityPoll();
-    alert('Unable to start review.');
+    notify('Unable to start review.');
   }
 }
 $('#reviewGo').onclick = startReview;
@@ -1138,13 +1149,17 @@ let fsCur = null,
 $('#addWs').onclick = () => openFs();
 async function openFs(p) {
   const d = await api('/api/fs' + (p ? '?path=' + encodeURIComponent(p) : ''));
+  if (d.error) notify(d.error);
   fsCur = d.path;
   fsCurIsRepo = !!d.isRepo;
   $('#fsPath').textContent = d.path;
-  $('#fsWarn').textContent = fsCurIsRepo
-    ? ''
-    : 'This folder is not a git repository — activity, diff, and review need a git repo.';
-  $('#fsWarn').classList.toggle('show', !fsCurIsRepo);
+  $('#fsUp').disabled = !d.parent;
+  $('#fsWarn').textContent = d.error
+    ? d.error
+    : fsCurIsRepo
+      ? ''
+      : 'This folder is not a git repository — activity, diff, and review need a git repo.';
+  $('#fsWarn').classList.toggle('show', !!d.error || !fsCurIsRepo);
   $('#fsDirs').innerHTML =
     d.dirs
       .map((x) => `<div class="d" data-p="${esc(x.path)}"><span>📁 ${esc(x.name)}</span></div>`)
@@ -1155,8 +1170,9 @@ async function openFs(p) {
   $('#fsModal').classList.add('show');
 }
 $('#fsUp').onclick = async () => {
+  if (!fsCur) return;
   const d = await api('/api/fs?path=' + encodeURIComponent(fsCur));
-  openFs(d.parent);
+  if (d.parent) openFs(d.parent);
 };
 $('#fsCancel').onclick = () => $('#fsModal').classList.remove('show');
 $('#fsUse').onclick = async () => {
@@ -1165,6 +1181,7 @@ $('#fsUse').onclick = async () => {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ path: fsCur }),
   });
+  if (r.error) return notify(r.error);
   $('#fsModal').classList.remove('show');
   state.ws = r.id;
   await loadWorkspaces();
@@ -1323,10 +1340,10 @@ function hidePlan() {
   $('#planBox').innerHTML = '';
 }
 async function delegateToTeam() {
-  if (!state.ws) return alert('Add/select a workspace first');
-  if (state.activeRun) return alert('A run is already active in this session.');
+  if (!state.ws) return notify('Add/select a workspace first');
+  if (state.activeRun) return notify('A run is already active in this session.');
   const team = activeTeam();
-  if (!team) return alert('Select a team first');
+  if (!team) return notify('Select a team first');
   const prompt = $('#prompt').value.trim();
   if (!prompt) return;
   await ensureSession();
@@ -1344,27 +1361,27 @@ async function delegateToTeam() {
     }
     if (r.error) {
       setRunActive(false);
-      return alert(r.error);
+      return notify(r.error);
     }
     $('#prompt').value = '';
     showPlan(r.steps || []);
     setRunActive(false);
   } catch (_e) {
     setRunActive(false);
-    alert('Unable to create team plan.');
+    notify('Unable to create team plan.');
   } finally {
     $('#delegate').disabled = state.activeRun;
   }
 }
 async function approvePlan() {
   if (!planDraft) return;
-  if (state.activeRun) return alert('A run is already active in this session.');
+  if (state.activeRun) return notify('A run is already active in this session.');
   const rows = [...$('#planBox').querySelectorAll('.planStep')];
   const steps = rows.map((row) => ({
     memberIndex: Number(row.dataset.member),
     task: row.querySelector('.planTask').value.trim(),
   }));
-  if (steps.some((s) => !s.task)) return alert('Every step needs a task.');
+  if (steps.some((s) => !s.task)) return notify('Every step needs a task.');
   $('#planApprove').disabled = true;
   setRunActive(true);
   try {
@@ -1376,7 +1393,7 @@ async function approvePlan() {
     if (r.error) {
       $('#planApprove').disabled = false;
       setRunActive(false);
-      return alert(r.error);
+      return notify(r.error);
     }
     hidePlan();
     startActivityPoll();
@@ -1384,7 +1401,7 @@ async function approvePlan() {
   } catch (_e) {
     $('#planApprove').disabled = false;
     setRunActive(false);
-    alert('Unable to approve team plan.');
+    notify('Unable to approve team plan.');
   }
 }
 $('#delegate').onclick = delegateToTeam;
@@ -1403,12 +1420,13 @@ $('#addMember').onclick = () => {
 $('#teamCancel').onclick = () => $('#teamModal').classList.remove('show');
 $('#teamSave').onclick = async () => {
   const team = collectTeamFromModal();
-  if (!team.members.length) return alert('Add at least one member with a model.');
+  if (!team.members.length) return notify('Add at least one member with a model.');
   const saved = await api('/api/teams', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ team }),
   });
+  if (saved.error) return notify(saved.error);
   $('#teamModal').classList.remove('show');
   setActiveTeam(saved.id);
   await loadTeams();
