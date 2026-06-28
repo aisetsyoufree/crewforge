@@ -487,18 +487,33 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && p === '/api/fs') {
       const dir = u.searchParams.get('path') || os.homedir();
+      const includeFiles = u.searchParams.get('includeFiles') === '1';
       const abs = path.resolve(dir);
       try {
         assertSafePath(abs, { allowHomeRoot: true });
-        const entries = fs
-          .readdirSync(abs, { withFileTypes: true })
+        const FS_CAP = 300;
+        const rawEntries = fs.readdirSync(abs, { withFileTypes: true });
+        const entries = rawEntries
           .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
           .map((d) => ({ name: d.name, path: path.join(abs, d.name) }))
           .filter((entry) => !sensitivePathReason(entry.path))
           .sort((a, b) => a.name.localeCompare(b.name));
+        const allFiles = includeFiles
+          ? rawEntries
+              .filter((d) => d.isFile() && !d.name.startsWith('.'))
+              .map((d) => ({ name: d.name, path: path.join(abs, d.name) }))
+              .filter((entry) => !sensitivePathReason(entry.path))
+              .sort((a, b) => a.name.localeCompare(b.name))
+          : [];
+        const total = entries.length + allFiles.length;
+        const truncated = total > FS_CAP;
+        const cappedDirs = truncated ? entries.slice(0, Math.min(entries.length, FS_CAP)) : entries;
+        const files = truncated
+          ? allFiles.slice(0, Math.max(0, FS_CAP - cappedDirs.length))
+          : allFiles;
         const isRepo = fs.existsSync(path.join(abs, '.git'));
         const parent = abs === HOME ? null : path.dirname(abs);
-        return json(res, 200, { path: abs, parent, isRepo, dirs: entries });
+        return json(res, 200, { path: abs, parent, isRepo, dirs: cappedDirs, files, truncated, total });
       } catch (e) {
         return json(res, 400, {
           error: e.message,
@@ -506,6 +521,7 @@ const server = http.createServer(async (req, res) => {
           parent: HOME,
           isRepo: false,
           dirs: [],
+          files: [],
         });
       }
     }

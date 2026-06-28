@@ -16,6 +16,7 @@
   --radius: 13px;
   --leftw: 280px;
   --rightw: 340px;
+  --bottomh: 180px;
 }
 * {
   box-sizing: border-box;
@@ -542,6 +543,10 @@ main {
   border-color: #5c4520;
   color: var(--warn);
 }
+.toast.info {
+  border-color: var(--line);
+  color: var(--muted);
+}
 .toast button {
   margin-left: auto;
   border: 0;
@@ -574,8 +579,26 @@ main {
 
 .composer {
   border-top: 1px solid var(--line);
-  padding: 12px 22px;
+  padding: 4px 22px 12px;
   background: var(--panel);
+  flex: 0 0 var(--bottomh);
+  min-height: 100px;
+  overflow: auto;
+}
+.rowResizeHandle {
+  width: 100%;
+  height: 5px;
+  cursor: row-resize;
+  background: transparent;
+  flex: 0 0 auto;
+  user-select: none;
+  touch-action: none;
+  margin-bottom: 6px;
+}
+.rowResizeHandle:hover,
+.rowResizeHandle.dragging {
+  background: var(--claude);
+  opacity: 0.4;
 }
 .composer .ctrls {
   display: flex;
@@ -1169,4 +1192,145 @@ select.model {
 .onboardGuide {
   color: var(--claude);
   text-decoration: underline;
+}
+
+/* ── right-panel tabs ─────────────────────────────────────── */
+.panelTabs {
+  display: flex;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+.panelTab {
+  flex: 1;
+  padding: 9px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.panelTab:hover {
+  color: var(--text);
+}
+.panelTab.on {
+  color: var(--text);
+  border-bottom-color: var(--claude);
+}
+
+/* ── pane visibility ──────────────────────────────────────── */
+.panelPane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.panelPane.hidden {
+  display: none;
+}
+
+/* usage pane scrolls inside its body */
+#paneUsage .usageBody {
+  flex: 1;
+  overflow: auto;
+}
+
+/* ── file explorer ────────────────────────────────────────── */
+.filePaneHead {
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+.fileFilter {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.fileFilter:focus {
+  outline: none;
+  border-color: var(--claude);
+}
+.fileBreadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+  min-height: 0;
+}
+.fileBreadcrumb span {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.filePaneUp {
+  padding: 3px 7px;
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+.fileTree {
+  flex: 1;
+  overflow: auto;
+  padding: 4px;
+}
+.fileEntry {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--text);
+}
+.fileEntry:hover {
+  background: var(--panel2);
+  border-color: var(--line);
+}
+.fileEntry .fileIcon {
+  font-size: 12px;
+  flex: 0 0 auto;
+  color: var(--muted);
+  line-height: 1;
+}
+.fileEntry.dir .fileIcon {
+  color: var(--warn);
+}
+.fileEntry .fileName {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.fileEntry.file .fileName {
+  color: var(--muted);
+}
+.fileEntry.file:hover .fileName {
+  color: var(--text);
+}
+.fileEntryCount {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, Menlo, monospace;
+  flex: 0 0 auto;
 }

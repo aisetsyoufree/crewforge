@@ -91,6 +91,7 @@
   </div>
 
   <div class="composer">
+    <div class="rowResizeHandle" id="composerResize" title="Drag to resize"></div>
     <div class="ctrls">
       <select class="model" id="provider"></select>
       <select class="model" id="model"></select>
@@ -117,31 +118,67 @@
 
 <aside class="activity">
   <div class="resizeHandle" id="rightResize" title="Drag to resize activity panel"></div>
-  <div class="usageHead"><h2>Usage</h2></div>
-  <div class="usageBody">
-    <div class="usageCaption">
-      Observed through this app — providers don't expose full account balance.
-    </div>
-    <div id="usageRows"><div class="usageEmpty">No usage recorded yet.</div></div>
+
+  <div class="panelTabs" role="tablist" aria-label="Right panel">
+    <button class="panelTab on" data-tab="files" role="tab" aria-selected="true" aria-controls="paneFiles" id="tab-files" type="button">Files</button>
+    <button class="panelTab" data-tab="changes" role="tab" aria-selected="false" aria-controls="paneChanges" id="tab-changes" type="button">Changes</button>
+    <button class="panelTab" data-tab="usage" role="tab" aria-selected="false" aria-controls="paneUsage" id="tab-usage" type="button">Usage</button>
   </div>
-  <div class="actHead">
-    <h2>Activity</h2>
-    <div class="reviewPick" id="reviewPick">
-      <select class="model" id="reviewModel"></select>
-      <button class="btn primary" id="reviewGo">Go</button>
-      <button class="btn ghost" id="reviewCancel">✕</button>
+
+  <!-- Files pane -->
+  <div class="panelPane" id="paneFiles" role="tabpanel" aria-labelledby="tab-files">
+    <div class="filePaneHead">
+      <input
+        id="fileFilter"
+        class="fileFilter"
+        type="search"
+        placeholder="Filter files…"
+        autocomplete="off"
+        aria-label="Filter files"
+      />
     </div>
-    <button class="btn ghost reviewBtn" id="reviewBtn">Review changes</button>
-    <button class="btn ghost" id="refreshAct">Refresh</button>
+    <div class="fileBreadcrumb">
+      <button class="btn ghost filePaneUp" id="filePaneUp" disabled type="button">↑ Up</button>
+      <span id="filePanePath"></span>
+      <button class="btn ghost" id="fileRefresh" type="button" title="Refresh" style="margin-left:auto;padding:3px 7px;font-size:11px">↺</button>
+    </div>
+    <div class="fileTree" id="fileTree">
+      <div class="actEmpty">No workspace selected.</div>
+    </div>
   </div>
-  <div class="actState" id="actState">Idle</div>
-  <div class="actFiles" id="actFiles"><div class="actEmpty">No workspace selected.</div></div>
-  <div class="actStat" id="actStat"></div>
-  <div class="diffBox">
-    <div class="diffTop">
-      <span id="diffTitle">Diff</span><button class="btn ghost" id="viewDiff">View diff</button>
+
+  <!-- Changes pane -->
+  <div class="panelPane hidden" id="paneChanges" role="tabpanel" aria-labelledby="tab-changes">
+    <div class="actHead">
+      <h2>Changes</h2>
+      <div class="reviewPick" id="reviewPick">
+        <select class="model" id="reviewModel"></select>
+        <button class="btn primary" id="reviewGo">Go</button>
+        <button class="btn ghost" id="reviewCancel">✕</button>
+      </div>
+      <button class="btn ghost reviewBtn" id="reviewBtn">Review changes</button>
+      <button class="btn ghost" id="refreshAct">Refresh</button>
     </div>
-    <pre class="diff" id="diffOut">Select a changed file or refresh the diff.</pre>
+    <div class="actState" id="actState">Idle</div>
+    <div class="actFiles" id="actFiles"><div class="actEmpty">No workspace selected.</div></div>
+    <div class="actStat" id="actStat"></div>
+    <div class="diffBox">
+      <div class="diffTop">
+        <span id="diffTitle">Diff</span><button class="btn ghost" id="viewDiff">View diff</button>
+      </div>
+      <pre class="diff" id="diffOut">Select a changed file or refresh the diff.</pre>
+    </div>
+  </div>
+
+  <!-- Usage pane -->
+  <div class="panelPane hidden" id="paneUsage" role="tabpanel" aria-labelledby="tab-usage">
+    <div class="usageHead"><h2>Usage</h2></div>
+    <div class="usageBody">
+      <div class="usageCaption">
+        Observed through this app — providers don't expose full account balance.
+      </div>
+      <div id="usageRows"><div class="usageEmpty">No usage recorded yet.</div></div>
+    </div>
   </div>
 </aside>
 

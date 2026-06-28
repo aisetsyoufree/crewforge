@@ -21,10 +21,15 @@ const ONBOARD_KEY = 'crewforge.onboarded';
 const SESSION_SORT_KEY = 'crewforge.sessionSort';
 const LEFT_WIDTH_KEY = 'crewforge.leftWidth';
 const RIGHT_WIDTH_KEY = 'crewforge.rightWidth';
+const BOTTOM_H_KEY = 'crewforge.bottomH';
+const RIGHT_TAB_KEY = 'crewforge.rightTab';
 const LEFT_WIDTH_MIN = 200;
 const LEFT_WIDTH_MAX = 520;
 const RIGHT_WIDTH_MIN = 260;
 const RIGHT_WIDTH_MAX = 680;
+const BOTTOM_H_MIN = 100;
+const BOTTOM_H_MAX = 480;
+const BOTTOM_H_DEFAULT = 180;
 let sessionSort = localStorage.getItem(SESSION_SORT_KEY) || 'newest';
 if (sessionSort !== 'newest' && sessionSort !== 'oldest') sessionSort = 'newest';
 const NOT_REPO_MSG = 'Not a git repository — file activity & diff/review need a git repo';
@@ -203,7 +208,7 @@ function notify(message, level = 'error') {
   toast.innerHTML = `<span>${esc(message)}</span><button type="button" aria-label="Dismiss">x</button>`;
   toast.querySelector('button').onclick = () => toast.remove();
   stack.appendChild(toast);
-  setTimeout(() => toast.remove(), 7000);
+  setTimeout(() => toast.remove(), level === 'info' ? 2500 : 7000);
 }
 
 async function api(p, opt) {
@@ -517,6 +522,203 @@ function initRightResize() {
 }
 initRightResize();
 
+// ---------- resizable composer (bottom pane) ----------
+function setBottomH(h) {
+  h = Math.max(BOTTOM_H_MIN, Math.min(BOTTOM_H_MAX, h));
+  document.body.style.setProperty('--bottomh', h + 'px');
+  localStorage.setItem(BOTTOM_H_KEY, String(h));
+}
+function initBottomResize() {
+  const saved = localStorage.getItem(BOTTOM_H_KEY);
+  if (saved) {
+    const h = parseInt(saved, 10);
+    if (!isNaN(h)) setBottomH(h);
+  }
+  const handle = $('#composerResize');
+  let dragging = false,
+    startY = 0,
+    startH = 0;
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragging = true;
+    startY = e.clientY;
+    startH = parseInt(getComputedStyle(document.body).getPropertyValue('--bottomh'), 10) || BOTTOM_H_DEFAULT;
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    setBottomH(startH - (e.clientY - startY));
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  });
+}
+initBottomResize();
+
+// ---------- right panel tabs ----------
+function switchRightTab(name) {
+  document.querySelectorAll('.panelTab').forEach((btn) => {
+    const on = btn.dataset.tab === name;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-selected', String(on));
+  });
+  document.querySelectorAll('.panelPane').forEach((pane) => {
+    pane.classList.toggle('hidden', pane.id !== 'pane' + name.charAt(0).toUpperCase() + name.slice(1));
+  });
+  localStorage.setItem(RIGHT_TAB_KEY, name);
+}
+document.querySelectorAll('.panelTab').forEach((btn) => {
+  btn.onclick = () => switchRightTab(btn.dataset.tab);
+});
+(function initRightTab() {
+  const saved = localStorage.getItem(RIGHT_TAB_KEY);
+  if (saved && ['files', 'changes', 'usage'].includes(saved)) switchRightTab(saved);
+})();
+
+// ---------- file explorer ----------
+const fileExplorer = { root: null, current: null, data: null, filter: '' };
+
+function fileExt(name) {
+  const m = name.match(/\.([^.]+)$/);
+  return m ? m[1].toLowerCase() : '';
+}
+function fileIcon(name) {
+  const ext = fileExt(name);
+  const code = ['js', 'ts', 'jsx', 'tsx', 'mjs', 'cjs', 'py', 'rb', 'go', 'rs', 'java', 'c', 'cpp', 'h'];
+  const data = ['json', 'yaml', 'yml', 'toml', 'env', 'xml', 'csv'];
+  const doc = ['md', 'txt', 'rst', 'log'];
+  const style = ['css', 'scss', 'sass', 'less'];
+  if (code.includes(ext)) return '{}';
+  if (data.includes(ext)) return '⚙';
+  if (doc.includes(ext)) return '≡';
+  if (style.includes(ext)) return '#';
+  if (['html', 'htm', 'svg'].includes(ext)) return '⟨⟩';
+  return '·';
+}
+
+async function openWsFiles(rootPath, navPath) {
+  fileExplorer.root = rootPath;
+  fileExplorer.current = navPath || rootPath;
+  if (!rootPath) {
+    fileExplorer.data = null;
+    fileExplorer.filter = '';
+    $('#fileFilter').value = '';
+    $('#fileTree').innerHTML = '<div class="actEmpty">No workspace selected.</div>';
+    $('#filePanePath').textContent = '';
+    $('#filePaneUp').disabled = true;
+    return;
+  }
+  $('#fileTree').innerHTML = '<div class="actEmpty">Loading…</div>';
+  try {
+    const url = '/api/fs?includeFiles=1&path=' + encodeURIComponent(fileExplorer.current);
+    const d = await api(url);
+    if (d.error) {
+      $('#fileTree').innerHTML = `<div class="actEmpty">${esc(d.error)}</div>`;
+      return;
+    }
+    fileExplorer.data = d;
+    renderFileTree(d);
+  } catch (_e) {
+    $('#fileTree').innerHTML = '<div class="actEmpty">Unable to load files.</div>';
+  }
+}
+
+function renderFileTree(d) {
+  if (!d) return;
+  const filter = fileExplorer.filter;
+  const relLabel = fileExplorer.root
+    ? fileExplorer.current === fileExplorer.root
+      ? '/'
+      : fileExplorer.current.replace(fileExplorer.root, '').replace(/\\/g, '/') || '/'
+    : '';
+  $('#filePanePath').textContent = relLabel;
+  $('#filePaneUp').disabled = !d.parent || fileExplorer.current === fileExplorer.root;
+
+  const dirs = (d.dirs || []).filter((x) => !filter || x.name.toLowerCase().includes(filter));
+  const files = (d.files || []).filter((x) => !filter || x.name.toLowerCase().includes(filter));
+
+  if (!dirs.length && !files.length) {
+    $('#fileTree').innerHTML = filter
+      ? `<div class="actEmpty">No matches for "${esc(filter)}".</div>`
+      : '<div class="actEmpty">Empty directory.</div>';
+    return;
+  }
+
+  const dirHtml = dirs
+    .map(
+      (x) =>
+        `<button type="button" class="fileEntry dir" data-path="${esc(x.path)}" title="${esc(x.name)}/">` +
+        `<span class="fileIcon" aria-hidden="true">▶</span>` +
+        `<span class="fileName">${esc(x.name)}/</span>` +
+        `</button>`
+    )
+    .join('');
+  const fileHtml = files
+    .map(
+      (x) =>
+        `<button type="button" class="fileEntry file" data-path="${esc(x.path)}" title="Click to copy path: ${esc(x.name)}">` +
+        `<span class="fileIcon" aria-hidden="true">${esc(fileIcon(x.name))}</span>` +
+        `<span class="fileName">${esc(x.name)}</span>` +
+        `</button>`
+    )
+    .join('');
+
+  $('#fileTree').innerHTML = dirHtml + fileHtml;
+  $('#fileTree')
+    .querySelectorAll('.fileEntry.dir')
+    .forEach((btn) => {
+      btn.onclick = () => openWsFiles(fileExplorer.root, btn.dataset.path);
+    });
+  $('#fileTree')
+    .querySelectorAll('.fileEntry.file')
+    .forEach((btn) => {
+      btn.onclick = async () => {
+        const rel = fileExplorer.root
+          ? btn.dataset.path.replace(fileExplorer.root, '').replace(/^[/\\]/, '')
+          : btn.dataset.path;
+        const inChanges = (activity.changedFiles || []).find((f) => f.path === rel);
+        if (inChanges) {
+          switchRightTab('changes');
+          activity.selected = inChanges.path;
+          if (activity.lastChanges) renderChanges(activity.lastChanges);
+          loadDiff(inChanges.path);
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(rel);
+          notify(`Copied: ${rel}`, 'info');
+        } catch (_e) {
+          notify(`Copy failed — ${rel}`, 'info');
+        }
+      };
+    });
+  if (d.truncated) {
+    $('#fileTree').insertAdjacentHTML(
+      'beforeend',
+      `<div class="actEmpty" style="font-size:10.5px;padding-top:6px">… showing ${(d.dirs || []).length + (d.files || []).length} of ${d.total} entries</div>`
+    );
+  }
+}
+
+$('#filePaneUp').onclick = () => {
+  if (!fileExplorer.data || !fileExplorer.data.parent) return;
+  if (fileExplorer.current === fileExplorer.root) return;
+  openWsFiles(fileExplorer.root, fileExplorer.data.parent);
+};
+$('#fileRefresh').onclick = () => {
+  if (fileExplorer.root) openWsFiles(fileExplorer.root, fileExplorer.current);
+};
+$('#fileFilter').oninput = () => {
+  fileExplorer.filter = $('#fileFilter').value.trim().toLowerCase();
+  renderFileTree(fileExplorer.data);
+};
+
 // ---------- bootstrap ----------
 (async () => {
   CAT = await api('/api/catalog');
@@ -603,6 +805,7 @@ function clearWorkspace() {
     state.es.close();
     state.es = null;
   }
+  openWsFiles(null);
   $('#wsName').textContent = 'No workspace';
   $('#wsPath').textContent = 'pick or add a folder to begin';
   $('#sessList').innerHTML =
@@ -625,6 +828,7 @@ async function selectWs(id, list) {
   $('#wsName').textContent = w.name;
   $('#wsPath').textContent = w.path;
   activity.selected = null;
+  openWsFiles(w.path);
   await loadChanges();
   await loadSessions();
 }
@@ -1024,6 +1228,8 @@ function renderChanges(d) {
     return;
   }
   activity.notRepo = false;
+  activity.lastChanges = d;
+  activity.changedFiles = d.files || [];
   updateRunControls();
   const files = d.files || [];
   if (!files.length) {
