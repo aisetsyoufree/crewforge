@@ -1334,3 +1334,131 @@ select.model {
   font-family: ui-monospace, Menlo, monospace;
   flex: 0 0 auto;
 }
+
+/* ── terminal / run pane ──────────────────────────────────── */
+.termControls {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+.devCmd {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, monospace;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.devCmd:focus {
+  outline: none;
+  border-color: var(--claude);
+}
+.termControls .btn {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  flex: 0 0 auto;
+}
+.termStatus {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: ui-monospace, Menlo, monospace;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+  min-height: 22px;
+}
+.termOutput {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 10px;
+  background: #070910;
+  font: 11.5px/1.55 ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-height: 80px;
+}
+.termOutput .stdout {
+  color: #c8d0de;
+}
+.termOutput .stderr {
+  color: #ff9b9b;
+}
+.termOutput .exit {
+  color: var(--muted);
+  font-style: italic;
+}
+.termOutput .termMeta {
+  color: var(--muted);
+  font-style: italic;
+}
+.agentLogHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.agentLogToggle {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+.agentLogBody {
+  flex: 0 0 auto;
+  max-height: 30vh;
+  display: flex;
+  flex-direction: column;
+}
+.agentLogBody.hidden {
+  display: none;
+}
+.agentLog {
+  flex: 1;
+  max-height: 30vh;
+}
+
+/* ── preview pane ─────────────────────────────────────────── */
+.previewBar {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+.previewUrl {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, monospace;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.previewUrl:focus {
+  outline: none;
+  border-color: var(--claude);
+}
+.previewBar .btn {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  flex: 0 0 auto;
+  text-decoration: none;
+  display: grid;
+  place-items: center;
+}
+.previewFrame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}

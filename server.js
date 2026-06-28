@@ -30,6 +30,10 @@
  *   GET  /api/keys                               locally stored provider key status
  *   POST /api/keys {provider,key}                save provider API key
  *   DELETE /api/keys?provider=                   remove provider API key
+ *   POST /api/dev/start {ws,cmd}                 spawn a dev server in the workspace
+ *   POST /api/dev/stop {ws}                      kill the dev server
+ *   GET  /api/dev/status?ws=                     dev server running state
+ *   GET  /api/dev/stream?ws=                     SSE stream of dev server stdout/stderr
  *
  * Zero dependencies. Node >= 18.
  */
@@ -39,7 +43,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const adapters = require('./adapters');
 const store = require('./lib/store');
 const watcher = require('./lib/watcher');
@@ -73,6 +77,50 @@ const CLI_LOGIN = {
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const RUN_TIMEOUT_MS = Number(process.env.CREW_FORGE_RUN_TIMEOUT_MS || 15 * 60 * 1000);
 const activeRuns = new Map();
+
+// ---------- dev process registry ----------
+const devProcs = new Map(); // wsId -> { proc, cmd, pid, output[], listeners }
+
+function startDevProc(wsId, wsPath, cmd) {
+  stopDevProc(wsId);
+  const proc = spawn(cmd, [], { cwd: wsPath, env: { ...process.env }, shell: true });
+  const info = { proc, cmd, pid: proc.pid, output: [], listeners: new Set() };
+  devProcs.set(wsId, info);
+  const pushLine = (text, type) => {
+    const ev = { type, text: text.trimEnd(), ts: Date.now() };
+    info.output.push(ev);
+    if (info.output.length > 2000) info.output.splice(0, info.output.length - 2000);
+    for (const fn of info.listeners) fn(ev);
+  };
+  const onData = (type) => (chunk) =>
+    chunk
+      .toString()
+      .split('\n')
+      .forEach((line) => line && pushLine(line, type));
+  proc.stdout.on('data', onData('stdout'));
+  proc.stderr.on('data', onData('stderr'));
+  proc.on('exit', (code, signal) => {
+    pushLine(`Process exited (${code != null ? 'code ' + code : signal})`, 'exit');
+    devProcs.delete(wsId);
+  });
+  proc.on('error', (err) => {
+    pushLine(`Spawn error: ${err.message}`, 'exit');
+    devProcs.delete(wsId);
+  });
+  return info;
+}
+
+function stopDevProc(wsId) {
+  const info = devProcs.get(wsId);
+  if (!info) return;
+  devProcs.delete(wsId);
+  try {
+    info.proc.kill('SIGTERM');
+    setTimeout(() => { try { info.proc.kill('SIGKILL'); } catch {} }, 3000);
+  } catch {}
+}
+
+process.on('exit', () => { for (const wsId of devProcs.keys()) stopDevProc(wsId); });
 const REQUESTED_HOST = process.env.CREW_FORGE_HOST || '127.0.0.1';
 const AUTH_TOKEN_ENV = process.env.CREW_FORGE_AUTH_TOKEN || '';
 const ALLOW_REMOTE = process.env.CREW_FORGE_ALLOW_REMOTE === '1' && !!AUTH_TOKEN_ENV;
@@ -94,6 +142,7 @@ const SECURITY_HEADERS = {
     "connect-src 'self'",
     "form-action 'none'",
     "frame-ancestors 'none'",
+    "frame-src 'self' http://localhost:* http://127.0.0.1:*",
     "img-src 'self' data:",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
@@ -916,6 +965,49 @@ const server = http.createServer(async (req, res) => {
         .finally(() => finishRun(run.key, run.controller));
 
       return json(res, 200, { ok: true });
+    }
+
+    // ---------- dev server process management ----------
+    if (p === '/api/dev/start' && req.method === 'POST') {
+      const data = await body(req, res);
+      if (!data) return;
+      const { ws: wsId, cmd } = data;
+      if (!wsId || !isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
+      if (!cmd || typeof cmd !== 'string' || !cmd.trim()) return json(res, 400, { error: 'cmd required' });
+      const wsObj = store.listWorkspaces().find((w) => w.id === wsId);
+      if (!wsObj) return json(res, 404, { error: 'unknown workspace' });
+      const info = startDevProc(wsId, wsObj.path, cmd.trim());
+      return json(res, 200, { ok: true, pid: info.pid });
+    }
+
+    if (p === '/api/dev/stop' && req.method === 'POST') {
+      const data = await body(req, res);
+      if (!data) return;
+      const { ws: wsId } = data;
+      if (!wsId || !isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
+      stopDevProc(wsId);
+      return json(res, 200, { ok: true });
+    }
+
+    if (p === '/api/dev/status' && req.method === 'GET') {
+      const wsId = u.searchParams.get('ws');
+      if (!wsId || !isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
+      const info = devProcs.get(wsId);
+      return json(res, 200, { running: !!info, cmd: info ? info.cmd : null, pid: info ? info.pid : null });
+    }
+
+    if (p === '/api/dev/stream' && req.method === 'GET') {
+      const wsId = u.searchParams.get('ws');
+      if (!wsId || !isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      const send = (ev) => { try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch {} };
+      const info = devProcs.get(wsId);
+      if (info) {
+        for (const ev of info.output) send(ev);
+        info.listeners.add(send);
+      }
+      req.on('close', () => { const i = devProcs.get(wsId); if (i) i.listeners.delete(send); });
+      return;
     }
 
     json(res, 404, { error: 'not found' });

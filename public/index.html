@@ -121,6 +121,8 @@
 
   <div class="panelTabs" role="tablist" aria-label="Right panel">
     <button class="panelTab on" data-tab="files" role="tab" aria-selected="true" aria-controls="paneFiles" id="tab-files" type="button">Files</button>
+    <button class="panelTab" data-tab="terminal" role="tab" aria-selected="false" aria-controls="paneTerminal" id="tab-terminal" type="button">Run</button>
+    <button class="panelTab" data-tab="preview" role="tab" aria-selected="false" aria-controls="panePreview" id="tab-preview" type="button">Preview</button>
     <button class="panelTab" data-tab="changes" role="tab" aria-selected="false" aria-controls="paneChanges" id="tab-changes" type="button">Changes</button>
     <button class="panelTab" data-tab="usage" role="tab" aria-selected="false" aria-controls="paneUsage" id="tab-usage" type="button">Usage</button>
   </div>
@@ -145,6 +147,35 @@
     <div class="fileTree" id="fileTree">
       <div class="actEmpty">No workspace selected.</div>
     </div>
+  </div>
+
+  <!-- Terminal / Run pane -->
+  <div class="panelPane hidden" id="paneTerminal" role="tabpanel" aria-labelledby="tab-terminal">
+    <div class="termControls">
+      <input id="devCmd" class="devCmd" type="text" placeholder="npm start" autocomplete="off" spellcheck="false" aria-label="Start command" />
+      <button class="btn primary" id="devRun" type="button">Run</button>
+      <button class="btn ghost" id="devStop" type="button" style="display:none;color:var(--bad)">Stop</button>
+      <button class="btn ghost" id="devClear" type="button" title="Clear output">✕</button>
+    </div>
+    <div class="termStatus" id="termStatus"></div>
+    <pre class="termOutput" id="termOutput"><span class="termMeta">No process running. Enter a command and click Run.</span></pre>
+    <div class="agentLogHead">
+      <span>Agent commands</span>
+      <button class="btn ghost agentLogToggle" id="agentLogToggle" type="button">▾ show</button>
+    </div>
+    <div class="agentLogBody hidden" id="agentLogBody">
+      <pre class="termOutput agentLog" id="agentLog"><span class="termMeta">No commands yet.</span></pre>
+    </div>
+  </div>
+
+  <!-- Preview pane -->
+  <div class="panelPane hidden" id="panePreview" role="tabpanel" aria-labelledby="tab-preview">
+    <div class="previewBar">
+      <input id="previewUrl" class="previewUrl" type="url" value="http://localhost:3000" autocomplete="off" aria-label="Preview URL" />
+      <button class="btn primary" id="previewLoad" type="button">Load</button>
+      <a class="btn ghost" id="previewExternal" href="http://localhost:3000" target="_blank" rel="noopener noreferrer" title="Open in browser">↗</a>
+    </div>
+    <iframe id="previewFrame" class="previewFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" title="App preview"></iframe>
   </div>
 
   <!-- Changes pane -->

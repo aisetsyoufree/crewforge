@@ -578,7 +578,8 @@ document.querySelectorAll('.panelTab').forEach((btn) => {
 });
 (function initRightTab() {
   const saved = localStorage.getItem(RIGHT_TAB_KEY);
-  if (saved && ['files', 'changes', 'usage'].includes(saved)) switchRightTab(saved);
+  if (saved && ['files', 'terminal', 'preview', 'changes', 'usage'].includes(saved))
+    switchRightTab(saved);
 })();
 
 // ---------- file explorer ----------
@@ -714,6 +715,150 @@ $('#filePaneUp').onclick = () => {
 $('#fileRefresh').onclick = () => {
   if (fileExplorer.root) openWsFiles(fileExplorer.root, fileExplorer.current);
 };
+
+// ---------- dev server runner ----------
+const devState = { running: false, es: null, savedCmd: '' };
+const DEV_CMD_KEY = 'crewforge.devCmd';
+
+function devStatusText(info) {
+  if (!info) return '';
+  if (info.running) return `● Running: ${info.cmd}  (pid ${info.pid})`;
+  return '';
+}
+
+function setDevRunning(running, info) {
+  devState.running = running;
+  $('#devRun').style.display = running ? 'none' : '';
+  $('#devStop').style.display = running ? '' : 'none';
+  $('#termStatus').textContent = running && info ? devStatusText(info) : (running ? '● Running' : '');
+}
+
+function appendTermLine(text, cls) {
+  const pre = $('#termOutput');
+  const meta = pre.querySelector('.termMeta');
+  if (meta) meta.remove();
+  const span = document.createElement('span');
+  span.className = cls;
+  span.textContent = text + '\n';
+  pre.appendChild(span);
+  pre.scrollTop = pre.scrollHeight;
+}
+
+function clearTermOutput() {
+  $('#termOutput').innerHTML = '<span class="termMeta">Output cleared.</span>';
+}
+
+function openDevStream() {
+  if (devState.es) { devState.es.close(); devState.es = null; }
+  if (!state.ws) return;
+  const es = new EventSource('/api/dev/stream?ws=' + encodeURIComponent(state.ws));
+  devState.es = es;
+  es.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      appendTermLine(d.text, d.type === 'stderr' ? 'stderr' : d.type === 'exit' ? 'exit' : 'stdout');
+      if (d.type === 'exit') setDevRunning(false, null);
+    } catch {}
+  };
+  es.onerror = () => { es.close(); devState.es = null; };
+}
+
+async function startDev() {
+  if (!state.ws) return notify('Select a workspace first.');
+  const cmd = $('#devCmd').value.trim();
+  if (!cmd) return notify('Enter a start command (e.g. npm start).');
+  localStorage.setItem(DEV_CMD_KEY, cmd);
+  $('#termOutput').innerHTML = `<span class="termMeta">Starting: ${esc(cmd)}…</span>`;
+  try {
+    const r = await api('/api/dev/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ws: state.ws, cmd }),
+    });
+    if (r.error) return notify(r.error);
+    setDevRunning(true, r);
+    openDevStream();
+  } catch (_e) {
+    notify('Unable to start process.');
+  }
+}
+
+async function stopDev() {
+  if (!state.ws) return;
+  try {
+    await api('/api/dev/stop', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ws: state.ws }),
+    });
+    setDevRunning(false, null);
+    if (devState.es) { devState.es.close(); devState.es = null; }
+  } catch (_e) {
+    notify('Unable to stop process.');
+  }
+}
+
+async function syncDevStatus() {
+  if (!state.ws) return;
+  try {
+    const info = await api('/api/dev/status?ws=' + encodeURIComponent(state.ws));
+    if (info.running) {
+      setDevRunning(true, info);
+      openDevStream();
+    } else {
+      setDevRunning(false, null);
+    }
+  } catch {}
+}
+
+$('#devRun').onclick = startDev;
+$('#devStop').onclick = stopDev;
+$('#devClear').onclick = clearTermOutput;
+$('#devCmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') startDev(); });
+(function initDevCmd() {
+  const saved = localStorage.getItem(DEV_CMD_KEY);
+  if (saved) $('#devCmd').value = saved;
+})();
+
+// ---------- agent log ----------
+const agentLog = [];
+
+function appendAgentLog(text) {
+  agentLog.push(text);
+  const pre = $('#agentLog');
+  const meta = pre.querySelector('.termMeta');
+  if (meta) meta.remove();
+  const span = document.createElement('span');
+  span.className = 'stdout';
+  span.textContent = text + '\n';
+  pre.appendChild(span);
+  pre.scrollTop = pre.scrollHeight;
+}
+
+function clearAgentLog() {
+  agentLog.length = 0;
+  $('#agentLog').innerHTML = '<span class="termMeta">No commands yet.</span>';
+}
+
+$('#agentLogToggle').onclick = () => {
+  const body = $('#agentLogBody');
+  const collapsed = body.classList.toggle('hidden');
+  $('#agentLogToggle').textContent = collapsed ? '▾ show' : '▴ hide';
+};
+
+// ---------- preview pane ----------
+function loadPreview() {
+  const url = $('#previewUrl').value.trim();
+  if (!url) return;
+  $('#previewFrame').src = url;
+  $('#previewExternal').href = url;
+}
+
+$('#previewLoad').onclick = loadPreview;
+$('#previewUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPreview(); });
+$('#previewUrl').addEventListener('input', () => {
+  $('#previewExternal').href = $('#previewUrl').value.trim() || '#';
+});
 $('#fileFilter').oninput = () => {
   fileExplorer.filter = $('#fileFilter').value.trim().toLowerCase();
   renderFileTree(fileExplorer.data);
@@ -829,6 +974,7 @@ async function selectWs(id, list) {
   $('#wsPath').textContent = w.path;
   activity.selected = null;
   openWsFiles(w.path);
+  syncDevStatus();
   await loadChanges();
   await loadSessions();
 }
@@ -883,6 +1029,7 @@ function openSession(sid) {
   live = {};
   setRunActive(false);
   $('#feed').innerHTML = '';
+  clearAgentLog();
   loadSessions();
   stopActivityPoll();
   if (state.es) state.es.close();
@@ -1016,6 +1163,7 @@ function render(e) {
   if (type === 'command') {
     finalizeActor(actor);
     appendHTML(bubble(actor, role, 'mono', `<div class="body">$ ${esc(text)}</div>`));
+    appendAgentLog(`[${actor}] $ ${text}`);
     return;
   }
   if (type === 'file_change') {
