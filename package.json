@@ -1,0 +1,52 @@
+{
+  "name": "crew-forge",
+  "version": "0.1.0-beta.1",
+  "description": "Crew Forge — a local-first AI software team manager: assign an objective to a lead, who orchestrates a crew of model-backed members (Claude, Codex, Grok, Gemini) across planning, implementation, review and QA.",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "aisetsyoufree",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aisetsyoufree/crewforge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aisetsyoufree/crewforge/issues"
+  },
+  "homepage": "https://github.com/aisetsyoufree/crewforge",
+  "keywords": [
+    "ai",
+    "llm",
+    "agents",
+    "multi-model",
+    "orchestration",
+    "claude",
+    "codex",
+    "grok",
+    "gemini",
+    "coding-agent",
+    "local-first",
+    "cli",
+    "developer-tools",
+    "source-available"
+  ],
+  "scripts": {
+    "adapter:run": "node scripts/run-agent.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "test": "node --test test/*.test.js",
+    "start": "node server.js"
+  },
+  "bin": {
+    "crew-forge": "server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.3",
+    "eslint": "^9.39.3",
+    "eslint-config-prettier": "^9.1.0",
+    "globals": "^16.5.0",
+    "prettier": "^3.6.2"
+  }
+}

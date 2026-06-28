@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible Crew Forge problem.
+title: '[Bug]: '
+labels: ['bug']
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest workflow that reproduces the issue.
+      placeholder: |
+        1. Start Crew Forge with npm start
+        2. Add a workspace
+        3. Run ...
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: macOS 15.5, Ubuntu 24.04, Windows 11, etc.
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: node --version
+  - type: textarea
+    id: providers
+    attributes:
+      label: Providers used
+      description: Claude, Codex, Grok, Gemini, and whether each was CLI or API key.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and errors
+      description: Paste relevant server output, browser console output, or adapter errors. Do not paste secrets.

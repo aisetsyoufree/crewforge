@@ -1,0 +1,9 @@
+node_modules/
+data/
+runs/
+*.log
+.mmo-worktrees/
+worktrees/
+.env
+.env.*
+!.env.example

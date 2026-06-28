@@ -1,0 +1,24 @@
+name: Beta feedback
+description: Share beta testing feedback or product suggestions.
+title: '[Feedback]: '
+labels: ['feedback']
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow tested
+      description: What were you trying to do with Crew Forge?
+    validations:
+      required: true
+  - type: textarea
+    id: useful
+    attributes:
+      label: What worked well?
+  - type: textarea
+    id: confusing
+    attributes:
+      label: What was confusing or missing?
+  - type: textarea
+    id: ideal
+    attributes:
+      label: What would make this useful enough to keep using?

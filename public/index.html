@@ -1,0 +1,246 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crew Forge</title>
+<link rel="stylesheet" href="/styles.css" />
+
+<aside class="nav">
+  <div class="brand">
+    <div class="brandTop">
+      <h1>Crew Forge</h1>
+      <button
+        class="iconBtn"
+        id="onboardingBtn"
+        type="button"
+        title="Get started"
+        aria-label="Get started"
+      >
+        ?
+      </button>
+      <button
+        class="iconBtn"
+        id="connectionsBtn"
+        type="button"
+        title="Connections"
+        aria-label="Connections"
+      >
+        ⚙
+      </button>
+    </div>
+    <div class="dots">
+      <i style="background: var(--claude)"></i><i style="background: var(--codex)"></i
+      ><i style="background: var(--grok)"></i><i style="background: var(--gemini)"></i>
+    </div>
+  </div>
+  <div class="sect">
+    <label>Workspace</label>
+    <select id="ws"></select>
+    <div class="row">
+      <button class="btn ghost" id="addWs" style="flex: 1">+ Add folder</button>
+      <button class="btn ghost" id="forgetWs" style="flex: 1; color: var(--warn)">Forget</button>
+    </div>
+  </div>
+  <div class="sect">
+    <label>Team</label>
+    <select id="teamPick" class="teamPick">
+      <option value="">— none —</option>
+    </select>
+    <div class="row">
+      <button class="btn ghost" id="editTeam" style="flex: 1">Edit</button>
+      <button class="btn ghost" id="newTeam" style="flex: 1">+ New</button>
+    </div>
+  </div>
+  <div class="sessions">
+    <h2>
+      Sessions
+      <span class="sessHeadCtrls"
+        ><button
+          class="iconBtn sortBtn"
+          id="sessSort"
+          type="button"
+          title="Newest first — click for oldest first"
+          aria-label="Toggle session sort order"
+        >
+          ↓</button
+        ><span class="plus" id="newSess" title="New session">＋</span></span
+      >
+    </h2>
+    <div id="sessList"></div>
+  </div>
+  <div class="resizeHandle" id="leftResize" title="Drag to resize sidebar"></div>
+</aside>
+
+<main>
+  <div class="top">
+    <div>
+      <div class="ws" id="wsName">No workspace</div>
+      <div class="path" id="wsPath">pick or add a folder to begin</div>
+    </div>
+    <div class="legend">
+      <span><i style="background: var(--claude)"></i>Claude</span>
+      <span><i style="background: var(--codex)"></i>Codex</span>
+      <span><i style="background: var(--grok)"></i>Grok</span>
+      <span><i style="background: var(--gemini)"></i>Gemini</span>
+    </div>
+  </div>
+
+  <div class="feed">
+    <div class="inner" id="feed">
+      <div class="empty">Pick a workspace and a model, then send a message to watch it work.</div>
+    </div>
+  </div>
+
+  <div class="composer">
+    <div class="ctrls">
+      <select class="model" id="provider"></select>
+      <select class="model" id="model"></select>
+      <div class="seg" id="mode">
+        <button data-m="plan" class="on">Plan (read-only)</button>
+        <button data-m="edit">Edit (can change files)</button>
+      </div>
+      <span id="caps" style="font-size: 11px; color: var(--muted)"></span>
+    </div>
+    <textarea
+      id="prompt"
+      placeholder="Message the model… (it runs against the selected workspace)"
+    ></textarea>
+    <div id="planBox" class="planBox"></div>
+    <div class="send">
+      <button class="btn ghost" id="delegate" style="display: none">Delegate to team</button>
+      <button class="btn ghost" id="stop" type="button" style="display: none; color: var(--bad)">
+        Stop
+      </button>
+      <button class="btn primary" id="send" style="margin-left: auto">Send ▶</button>
+    </div>
+  </div>
+</main>
+
+<aside class="activity">
+  <div class="resizeHandle" id="rightResize" title="Drag to resize activity panel"></div>
+  <div class="usageHead"><h2>Usage</h2></div>
+  <div class="usageBody">
+    <div class="usageCaption">
+      Observed through this app — providers don't expose full account balance.
+    </div>
+    <div id="usageRows"><div class="usageEmpty">No usage recorded yet.</div></div>
+  </div>
+  <div class="actHead">
+    <h2>Activity</h2>
+    <div class="reviewPick" id="reviewPick">
+      <select class="model" id="reviewModel"></select>
+      <button class="btn primary" id="reviewGo">Go</button>
+      <button class="btn ghost" id="reviewCancel">✕</button>
+    </div>
+    <button class="btn ghost reviewBtn" id="reviewBtn">Review changes</button>
+    <button class="btn ghost" id="refreshAct">Refresh</button>
+  </div>
+  <div class="actState" id="actState">Idle</div>
+  <div class="actFiles" id="actFiles"><div class="actEmpty">No workspace selected.</div></div>
+  <div class="actStat" id="actStat"></div>
+  <div class="diffBox">
+    <div class="diffTop">
+      <span id="diffTitle">Diff</span><button class="btn ghost" id="viewDiff">View diff</button>
+    </div>
+    <pre class="diff" id="diffOut">Select a changed file or refresh the diff.</pre>
+  </div>
+</aside>
+
+<div class="modal" id="onboardingModal">
+  <div class="card onboardCard">
+    <h3>Get started</h3>
+    <div class="onboardBody" id="onboardingBody"></div>
+    <div class="foot">
+      <button class="btn ghost" id="onboardingBack" type="button">Back</button>
+      <button class="btn ghost" id="onboardingClose" type="button">Close</button>
+      <button class="btn primary" id="onboardingNext" type="button">Next</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="fsModal">
+  <div class="card">
+    <h3>Choose a folder</h3>
+    <div class="crumbs">
+      <button class="btn ghost" id="fsUp">↑ Up</button><span id="fsPath"></span>
+    </div>
+    <div class="fsWarn" id="fsWarn"></div>
+    <div class="dirs" id="fsDirs"></div>
+    <div class="foot">
+      <button class="btn ghost" id="fsCancel">Cancel</button
+      ><button class="btn primary" id="fsUse">Use this folder</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="teamModal">
+  <div class="card teamCard">
+    <h3 id="teamModalTitle">New team</h3>
+    <div style="padding: 12px 16px; border-bottom: 1px solid var(--line)">
+      <label
+        style="
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.8px;
+          color: var(--muted);
+          display: block;
+          margin-bottom: 6px;
+        "
+        >Name</label
+      >
+      <input id="teamName" placeholder="e.g. Review squad" />
+    </div>
+    <div style="padding: 12px 16px; flex: 1; min-height: 0; display: flex; flex-direction: column">
+      <div
+        style="
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 8px;
+        "
+      >
+        <label
+          style="
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: var(--muted);
+          "
+          >Members</label
+        >
+        <button class="btn ghost" id="addMember" style="padding: 5px 9px; font-size: 11px">
+          + Add seat
+        </button>
+      </div>
+      <div class="teamMembers" id="teamMembers"></div>
+    </div>
+    <div class="foot">
+      <button
+        class="btn ghost"
+        id="teamDelete"
+        style="margin-right: auto; color: var(--bad); display: none"
+      >
+        Delete
+      </button>
+      <button class="btn ghost" id="teamCancel">Cancel</button>
+      <button class="btn primary" id="teamSave">Save team</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="connectionsModal">
+  <div class="card connectionsCard">
+    <h3>Connections</h3>
+    <div class="connectionsBody">
+      <div class="connectionsCaption">
+        Keys are stored locally in data/keys.json (never committed) and sent only to that provider.
+      </div>
+      <div id="connectionsRows"></div>
+    </div>
+    <div class="foot">
+      <button class="btn ghost" id="connectionsRefresh">Refresh</button
+      ><button class="btn primary" id="connectionsClose">Done</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js" defer></script>
