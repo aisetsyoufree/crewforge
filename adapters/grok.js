@@ -18,18 +18,20 @@ module.exports = {
   run({ prompt, model, cwd, mode, signal }, onEvent) {
     if (signal && signal.aborted) return Promise.resolve({ finalText: '', cancelled: true });
     return new Promise((resolve) => {
-      // Headless: --permission-mode is a no-op for approvals, so use --yolo to
-      // auto-approve tool execution. Plan mode restricts to read-only tools.
+      // Headless Grok uses --single. Plan mode restricts the available tools;
+      // edit mode allows approvals so it can modify files in the workspace.
       const args = [
-        '-p',
+        '--single',
         prompt,
         '--output-format',
         'streaming-json',
-        '--yolo',
+        '--permission-mode',
+        mode === 'edit' ? 'acceptEdits' : 'plan',
         '--cwd',
         cwd || process.cwd(),
       ];
-      if (mode !== 'edit') args.push('--tools', 'read_file,grep,list_dir');
+      if (mode === 'edit') args.push('--always-approve');
+      else args.push('--tools', 'read_file,grep,list_dir');
       if (model) args.push('-m', model);
 
       const child = spawn('grok', args, { stdio: ['ignore', 'pipe', 'pipe'] });

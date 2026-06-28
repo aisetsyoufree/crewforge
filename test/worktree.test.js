@@ -14,7 +14,7 @@ function git(cwd, args) {
 }
 
 function makeRepo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmo-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewforge-test-'));
   git(dir, ['init']);
   git(dir, ['config', 'user.email', 'test@test.com']);
   git(dir, ['config', 'user.name', 'Test']);
@@ -36,7 +36,7 @@ test('create returns path and branch, worktree dir is usable', () => {
   try {
     const result = create(repo, 'featA');
     assert.ok(result.path, 'should return a path');
-    assert.equal(result.branch, 'mmo/featA');
+    assert.equal(result.branch, 'crewforge/featA');
     assert.ok(fs.existsSync(result.path), 'worktree path should exist on disk');
   } finally {
     cleanup(repo);
@@ -55,12 +55,22 @@ test('create is idempotent — calling twice does not throw', () => {
   }
 });
 
+test('create rejects a stale worktree directory that is not a git worktree', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, '.crewforge-worktrees', 'featA'), { recursive: true });
+    assert.throws(() => create(repo, 'featA'), /Worktree path exists but is not a git worktree/);
+  } finally {
+    cleanup(repo);
+  }
+});
+
 test('list includes the created worktree', () => {
   const repo = makeRepo();
   try {
     create(repo, 'featA');
     const entries = list(repo);
-    const found = entries.find((e) => e.branch === 'mmo/featA');
+    const found = entries.find((e) => e.branch === 'crewforge/featA');
     assert.ok(found, 'list() should contain the featA worktree');
     assert.ok(found.path.includes('featA'), 'path should contain the name');
   } finally {
@@ -99,7 +109,7 @@ test('remove deletes the worktree and branch', () => {
     assert.ok(!fs.existsSync(wtPath), 'worktree path should be gone after remove');
     const entries = list(repo);
     assert.ok(
-      !entries.find((e) => e.branch === 'mmo/featA'),
+      !entries.find((e) => e.branch === 'crewforge/featA'),
       'list() should not contain featA after remove'
     );
   } finally {
@@ -108,7 +118,7 @@ test('remove deletes the worktree and branch', () => {
 });
 
 test('create throws for non-git directory', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmo-nogit-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewforge-nogit-'));
   try {
     assert.throws(() => create(dir, 'x'), /Not a git repository/);
   } finally {
@@ -121,8 +131,8 @@ test('name sanitization strips special characters', () => {
   try {
     const result = create(repo, 'feat/hello world!');
     // Should not throw; branch name should be sanitized.
-    assert.ok(result.branch.startsWith('mmo/'), 'branch should start with mmo/');
-    const suffix = result.branch.slice('mmo/'.length);
+    assert.ok(result.branch.startsWith('crewforge/'), 'branch should start with crewforge/');
+    const suffix = result.branch.slice('crewforge/'.length);
     assert.ok(
       !/[ /!]/.test(suffix),
       `branch suffix "${suffix}" should not contain spaces, slashes, or bangs`

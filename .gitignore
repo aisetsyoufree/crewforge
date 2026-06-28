@@ -2,7 +2,7 @@ node_modules/
 data/
 runs/
 *.log
-.mmo-worktrees/
+.crewforge-worktrees/
 worktrees/
 .env
 .env.*

@@ -14,6 +14,8 @@ npm --version
 
 ## 2. Install and log in to the CLIs
 
+Run Crew Forge on the same machine where your target repositories and authenticated CLI tools live. A Pi-hosted dashboard cannot use Claude/Codex/Grok CLIs that are only installed and logged in on a Mac. Install and authenticate those CLIs on the Pi too, or run Crew Forge on the Mac.
+
 You need **at least one** of `claude`, `codex`, or `grok` on your PATH. Install each you plan to use according to its official instructions, then authenticate.
 
 **Claude Code CLI**
@@ -54,7 +56,7 @@ Log in (uses your SuperGrok or X Premium+ subscription):
 grok login --device-auth
 ```
 
-Follow the browser OAuth flow. A token is stored locally for the CLI.
+Follow the browser OAuth flow. A token is stored locally for the CLI. Crew Forge expects Grok Build CLI 0.2.72 or newer for headless runs.
 
 ## 3. (Optional) Add a Gemini API key
 

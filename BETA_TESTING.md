@@ -10,6 +10,10 @@ Crew Forge is intended for technical beta testers who understand Git, local deve
 - Prefer Plan mode until the workspace and provider behavior look correct.
 - Keep provider dashboards available for authoritative usage and billing data.
 
+## Updating From Earlier Local Builds
+
+Crew Forge 0.1.0-beta.2 renamed old internal `mmo` local state to `crewforge`. This may reset small browser preferences such as onboarding, active team, and worktree branch names. If you tested earlier builds, remove stale `.mmo-worktrees/` directories from test repositories after saving any work you still need.
+
 ## Smoke Test Flow
 
 1. Start Crew Forge with `npm start`.

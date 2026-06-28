@@ -56,7 +56,7 @@ Provider and product names are used for identification only. See [TRADEMARKS.md]
 - At least one supported provider:
   - Claude Code CLI (`claude`)
   - OpenAI Codex CLI (`codex`)
-  - xAI Grok Build CLI (`grok`)
+  - xAI Grok Build CLI (`grok` 0.2.72 or newer)
   - Gemini API key (`GEMINI_API_KEY` or the Connections panel)
 
 ## Quickstart
@@ -78,6 +78,16 @@ To use a different port:
 ```bash
 node server.js 3000
 ```
+
+## Where To Run It
+
+Run Crew Forge on the same machine that has:
+
+- the Git workspaces you want agents to inspect or edit
+- authenticated provider CLIs for Claude, Codex, or Grok
+- any local credentials those CLIs need
+
+A Raspberry Pi can run the Node server if Node.js, Git, and the provider tools are installed and authenticated on the Pi. It does **not** currently orchestrate Claude/Codex/Grok CLIs running on a different Mac. If the app runs on a Pi while the authenticated CLIs and target repos live on your Mac, CLI-backed providers will not work as expected. Gemini API mode can run anywhere that has network access and a valid API key.
 
 ## First Run
 

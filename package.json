@@ -1,6 +1,6 @@
 {
   "name": "crew-forge",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "Crew Forge — a local-first AI software team manager: assign an objective to a lead, who orchestrates a crew of model-backed members (Claude, Codex, Grok, Gemini) across planning, implementation, review and QA.",
   "license": "SEE LICENSE IN LICENSE",
   "author": "aisetsyoufree",

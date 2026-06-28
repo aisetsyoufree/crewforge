@@ -70,9 +70,8 @@ const CLI_LOGIN = {
 };
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const activeRuns = new Map();
-const REQUESTED_HOST = process.env.CREW_FORGE_HOST || process.env.MMO_HOST || '127.0.0.1';
-const ALLOW_REMOTE =
-  process.env.CREW_FORGE_ALLOW_REMOTE === '1' || process.env.MMO_ALLOW_REMOTE === '1';
+const REQUESTED_HOST = process.env.CREW_FORGE_HOST || '127.0.0.1';
+const ALLOW_REMOTE = process.env.CREW_FORGE_ALLOW_REMOTE === '1';
 const HOST = !isLoopbackHost(REQUESTED_HOST) && !ALLOW_REMOTE ? '127.0.0.1' : REQUESTED_HOST;
 const HOST_IS_REMOTE = !isLoopbackHost(HOST);
 const SECURITY_HEADERS = {
