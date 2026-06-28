@@ -10,6 +10,13 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 - Do **not** set `CREW_FORGE_HOST=0.0.0.0` or proxy/port-forward the port. Overriding the bind address exposes a **code-execution surface** to your network — the folder browser and Edit-mode agents can read paths you give them and run arbitrary shell commands. Only bind to loopback unless you fully understand and accept that risk.
 - The folder browser and agents can read any path you give them — only run the dashboard on a trusted machine.
 
+## Repository maintainer checklist
+
+- Keep only the deploy keys that are actively needed. For this repository, a single repo-scoped write deploy key is enough for publishing from the local machine; remove unused personal SSH deploy keys after the push succeeds.
+- Prefer deploy keys over broad personal access tokens. If a token is ever used, make it fine-grained, repo-scoped, short-lived, and rotate it after publishing.
+- Enable GitHub security features before inviting testers: private vulnerability reporting, secret scanning, Dependabot alerts, and branch protection for `main`.
+- Do not grant write access to public testers. Ask testers to open issues or pull requests; repository owners decide what gets merged.
+
 ## Edit mode and code execution
 
 - **EDIT mode** lets the selected agent run arbitrary shell commands (`Bash`, exec, etc.) and modify files inside the chosen workspace.

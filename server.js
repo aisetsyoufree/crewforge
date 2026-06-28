@@ -75,15 +75,49 @@ const ALLOW_REMOTE =
   process.env.CREW_FORGE_ALLOW_REMOTE === '1' || process.env.MMO_ALLOW_REMOTE === '1';
 const HOST = !isLoopbackHost(REQUESTED_HOST) && !ALLOW_REMOTE ? '127.0.0.1' : REQUESTED_HOST;
 const HOST_IS_REMOTE = !isLoopbackHost(HOST);
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  'Content-Security-Policy': [
+    "default-src 'self'",
+    "base-uri 'none'",
+    "connect-src 'self'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+    "img-src 'self' data:",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+  ].join('; '),
+};
 
 for (const [provider, envName] of Object.entries(KEY_ENV)) {
   const value = keys.get(provider);
   if (value) process.env[envName] = value;
 }
 
+const send = (res, code, headers, payload) => {
+  res.writeHead(code, { ...SECURITY_HEADERS, ...headers });
+  res.end(payload);
+};
 const json = (res, code, obj) => {
-  res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
-  res.end(JSON.stringify(obj));
+  send(
+    res,
+    code,
+    { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    JSON.stringify(obj)
+  );
+};
+const reject = (res, code, message) => json(res, code, { error: message });
+const isJsonRequest = (req) => {
+  const contentType = String(req.headers['content-type'] || '').toLowerCase();
+  return contentType.startsWith('application/json');
+};
+const hasTrustedFetchMetadata = (req) => {
+  const site = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+  return !site || site === 'same-origin' || site === 'none';
 };
 const body = (req, res) =>
   new Promise((r) => {
@@ -95,12 +129,17 @@ const body = (req, res) =>
       size += c.length;
       if (size > MAX_BODY_BYTES) {
         done = true;
-        res.writeHead(413, {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache',
-          Connection: 'close',
-        });
-        res.end(JSON.stringify({ error: 'payload too large' }), () => req.destroy());
+        send(
+          res,
+          413,
+          {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+            Connection: 'close',
+          },
+          JSON.stringify({ error: 'payload too large' })
+        );
+        req.destroy();
         r(null);
         return;
       }
@@ -155,6 +194,7 @@ function isAllowedLocalRequest(req, pathname) {
     req.method === 'DELETE' ||
     (req.method === 'GET' && pathname === '/api/stream');
   if (!needsCheck) return true;
+  if (!hasTrustedFetchMetadata(req)) return false;
   const host = hostPart(req.headers.host || '');
   if (!HOST_IS_REMOTE && !isLoopbackHost(host)) return false;
   const origin = req.headers.origin;
@@ -237,27 +277,37 @@ async function providerHealth() {
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://localhost:${PORT}`);
   const p = u.pathname;
-  if (!isAllowedLocalRequest(req, p)) return json(res, 403, { error: 'forbidden origin' });
+  if (!isAllowedLocalRequest(req, p)) return reject(res, 403, 'forbidden origin');
+  if (req.method === 'POST' && !isJsonRequest(req)) return reject(res, 415, 'expected JSON body');
 
   try {
     if (req.method === 'GET' && p === '/') {
-      return res
-        .writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-        .end(fs.readFileSync(path.join(ROOT, 'public', 'index.html')));
+      return send(
+        res,
+        200,
+        { 'Content-Type': 'text/html; charset=utf-8' },
+        fs.readFileSync(path.join(ROOT, 'public', 'index.html'))
+      );
     }
     if (req.method === 'GET' && STATIC_ASSETS[p]) {
       const asset = STATIC_ASSETS[p];
-      return res
-        .writeHead(200, { 'Content-Type': asset.contentType })
-        .end(fs.readFileSync(asset.file));
+      return send(
+        res,
+        200,
+        { 'Content-Type': asset.contentType, 'Cache-Control': 'no-cache' },
+        fs.readFileSync(asset.file)
+      );
     }
     if (req.method === 'GET' && p === '/api/catalog') return json(res, 200, adapters.catalog());
     if (req.method === 'GET' && p === '/api/health') return json(res, 200, await providerHealth());
 
     if (req.method === 'GET' && p === '/ONBOARDING.md') {
-      return res
-        .writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' })
-        .end(fs.readFileSync(path.join(ROOT, 'ONBOARDING.md')));
+      return send(
+        res,
+        200,
+        { 'Content-Type': 'text/markdown; charset=utf-8' },
+        fs.readFileSync(path.join(ROOT, 'ONBOARDING.md'))
+      );
     }
 
     if (req.method === 'GET' && p === '/api/keys') return json(res, 200, keys.list());
@@ -468,6 +518,7 @@ const server = http.createServer(async (req, res) => {
       const off = Number(u.searchParams.get('off') || 0);
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       res.writeHead(200, {
+        ...SECURITY_HEADERS,
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',

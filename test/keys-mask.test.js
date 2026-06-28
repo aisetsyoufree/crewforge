@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const test = require('node:test');
 
-const { list } = require('../lib/keys');
+const { list, set } = require('../lib/keys');
 
 test('list returns sorted provider entries with expected shape', () => {
   const entries = list();
@@ -27,4 +27,11 @@ test('list is read-only and does not mutate keys.json', () => {
   const before = list();
   const after = list();
   assert.deepStrictEqual(after, before);
+});
+
+test('set rejects unknown providers', () => {
+  assert.throws(
+    () => set('unknown-provider', 'secret-value'),
+    (err) => err instanceof Error && /unknown provider/.test(err.message)
+  );
 });
