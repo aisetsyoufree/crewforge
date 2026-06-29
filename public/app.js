@@ -1092,6 +1092,8 @@ $('#fileFilter').oninput = () => {
   loadUsage();
   refreshContextSaverInfo();
   setInterval(loadUsage, 10000);
+  // Load provider readiness so the first-run checklist + Send-gating are accurate.
+  loadOnboardingHealth().then(refreshEmptyState);
   if (!localStorage.getItem(ONBOARD_KEY)) openOnboarding();
 })();
 
@@ -1128,6 +1130,44 @@ function setMode(m) {
     .querySelectorAll('button')
     .forEach((b) => b.classList.toggle('on', b.dataset.m === m));
 }
+
+// ---------- first-run readiness ----------
+// True once we know at least one provider is authenticated/ready.
+function anyProviderReady() {
+  return Array.isArray(onboardingHealth) && onboardingHealth.some((p) => p && p.ready);
+}
+// Health may not be loaded yet; treat unknown as "don't block" so we never
+// falsely lock out a user whose providers are actually fine.
+function providersKnown() {
+  return Array.isArray(onboardingHealth);
+}
+function firstBlocker() {
+  if (providersKnown() && !anyProviderReady())
+    return { reason: 'Connect a model first — open Connections (⚙) and sign in to a provider.', action: 'connections' };
+  if (!state.ws)
+    return { reason: 'Add a workspace folder to begin (＋ Add folder).', action: 'workspace' };
+  return null;
+}
+function checklistRow(done, label, hint) {
+  return `<div class="checkRow ${done ? 'done' : ''}"><span class="checkMark">${done ? '✓' : '○'}</span><div><div class="checkLabel">${label}</div>${hint ? `<div class="checkHint">${hint}</div>` : ''}</div></div>`;
+}
+function emptyStateHtml() {
+  const provDone = anyProviderReady();
+  const wsDone = !!state.ws;
+  const notRepo = wsDone && activity.notRepo;
+  return `<div class="firstRun">
+    <h2>Welcome to Crew Forge</h2>
+    <p class="firstRunSub">Run AI coding models against a local folder — solo or as a delegated team. Three steps to your first run:</p>
+    ${checklistRow(provDone, 'Connect a model', provDone ? 'A provider is signed in and ready.' : 'Open Connections (⚙ top-left) and sign in to Claude, Codex, or Grok.')}
+    ${checklistRow(wsDone, 'Pick a workspace', wsDone ? 'Working in this folder.' : 'Click “＋ Add folder” in the sidebar. Tip: choose a git repo so Edit, diffs, review, and teams all work.')}
+    ${checklistRow(false, 'Send your first prompt', notRepo ? 'Heads-up: this folder isn’t a git repo, so Edit / diff / review / teams are limited. Plan mode still works.' : 'Plan mode is read-only and safe. Switch to Edit to let the model change files.')}
+  </div>`;
+}
+function refreshEmptyState() {
+  const feed = $('#feed');
+  if (feed && feed.querySelector('.empty, .firstRun') && !feed.querySelector('.turn, .status'))
+    feed.innerHTML = emptyStateHtml();
+}
 $('#mode')
   .querySelectorAll('button')
   .forEach((b) => (b.onclick = () => !b.disabled && setMode(b.dataset.m)));
@@ -1163,8 +1203,7 @@ function clearWorkspace() {
   $('#wsPath').textContent = 'pick or add a folder to begin';
   $('#sessList').innerHTML =
     '<div style="color:var(--muted);padding:10px;font-size:12px">No workspace selected.</div>';
-  $('#feed').innerHTML =
-    '<div class="empty">Pick a workspace and a model, then send a message to watch it work.</div>';
+  $('#feed').innerHTML = emptyStateHtml();
   $('#actState').textContent = 'Idle';
   $('#actFiles').innerHTML = '<div class="actEmpty">No workspace selected.</div>';
   $('#actStat').textContent = '';
@@ -1452,7 +1491,12 @@ async function ensureSession() {
   });
 }
 async function send() {
-  if (!state.ws) return notify('Add/select a workspace first');
+  const block = firstBlocker();
+  if (block) {
+    notify(block.reason);
+    if (block.action === 'connections') openConnections();
+    return;
+  }
   if (state.activeRun) return notify('A run is already active in this session.');
   const prompt = $('#prompt').value.trim();
   if (!prompt) return;
