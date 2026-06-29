@@ -30,6 +30,8 @@ Crew Forge does not guarantee that any particular subscription, region, organiza
 
 The "Usage" panel and observed metrics show only the token, call, and cost information that passed through this dashboard. They do **not** represent your complete account balance, quota, or billing status. Always check the official provider dashboards and invoices for authoritative usage data.
 
+Context Saver reduces repeated or older context before provider calls. It may omit details that matter, especially in long sessions. Review outputs carefully and switch it off when exact prior wording or full history matters.
+
 This software is provided **"AS IS"**, without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and noninfringement.
 
 Crew Forge is source-available for noncommercial use. It is not licensed for commercial resale, paid hosting, paid distribution, or substantially similar commercial products without prior written permission from the copyright holder. See `LICENSE` and `TRADEMARKS.md`.

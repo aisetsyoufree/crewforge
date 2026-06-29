@@ -12,6 +12,7 @@ let CAT = [],
 let activity = { timer: null, selected: null, notRepo: false };
 let connectionsTimer = null;
 let TEAMS = [],
+  SKILLS = [],
   editingTeam = null;
 let planDraft = null;
 let rateLimitActors = new Set();
@@ -23,6 +24,7 @@ const LEFT_WIDTH_KEY = 'crewforge.leftWidth';
 const RIGHT_WIDTH_KEY = 'crewforge.rightWidth';
 const BOTTOM_H_KEY = 'crewforge.bottomH';
 const RIGHT_TAB_KEY = 'crewforge.rightTab';
+const CONTEXT_MODE_KEY = 'crewforge.contextMode';
 const LEFT_WIDTH_MIN = 200;
 const LEFT_WIDTH_MAX = 520;
 const RIGHT_WIDTH_MIN = 260;
@@ -32,6 +34,9 @@ const BOTTOM_H_MAX = 480;
 const BOTTOM_H_DEFAULT = 180;
 let sessionSort = localStorage.getItem(SESSION_SORT_KEY) || 'newest';
 if (sessionSort !== 'newest' && sessionSort !== 'oldest') sessionSort = 'newest';
+let contextMode = localStorage.getItem(CONTEXT_MODE_KEY) || 'balanced';
+if (!['off', 'balanced', 'maximum'].includes(contextMode)) contextMode = 'balanced';
+let contextSaverInfo = null;
 const NOT_REPO_MSG = 'Not a git repository — file activity & diff/review need a git repo';
 const COLOR = {
   claude: 'var(--claude)',
@@ -211,8 +216,18 @@ function notify(message, level = 'error') {
   setTimeout(() => toast.remove(), level === 'info' ? 2500 : 7000);
 }
 
+let _sessionExpired = false;
 async function api(p, opt) {
   const r = await fetch(p, opt);
+  if (r.status === 401) {
+    if (!_sessionExpired) {
+      _sessionExpired = true;
+      notify('Session lost — refresh the page to reconnect.', 'error');
+    }
+    const err = new Error('session_expired');
+    err.sessionExpired = true;
+    throw err;
+  }
   return r.json();
 }
 function setRunActive(active) {
@@ -232,9 +247,14 @@ function updateRunControls() {
 // ---------- connections ----------
 async function loadConnections() {
   let rows = [];
+  let saver = null;
   try {
     rows = await api('/api/keys');
   } catch {}
+  try {
+    saver = await api('/api/context-saver');
+  } catch {}
+  renderContextSaverStatus(saver);
   const byProvider = {};
   (rows || []).forEach((r) => {
     byProvider[r.provider] = r;
@@ -266,6 +286,84 @@ async function loadConnections() {
   $('#connectionsRows')
     .querySelectorAll('.removeKey')
     .forEach((btn) => (btn.onclick = removeKey));
+}
+function renderContextSaverStatus(saver) {
+  if (!saver || saver.error) {
+    $('#contextSaverStatus').innerHTML = '';
+    return;
+  }
+  const headroomState = saver.headroomActive
+    ? 'Headroom active'
+    : saver.headroomInstalled
+      ? 'Headroom installed, needs proxy/API key'
+      : 'Using built-in saver';
+  const stateClass = saver.headroomActive ? 'set' : saver.headroomInstalled ? 'warn' : '';
+  $('#contextSaverStatus').innerHTML = `<div class="contextSaverTitle">Context Saver</div>
+    <div class="contextSaverGrid">
+      <span>Current behavior</span><strong class="${stateClass}">${esc(headroomState)}</strong>
+      <span>Composer setting</span><strong>${esc(contextMode)}</strong>
+      <span>Optional install</span><code>npm install headroom-ai</code>
+      <span>Optional proxy</span><code>headroom proxy</code>
+    </div>`;
+}
+function updateContextSaverBadge() {
+  const badge = $('#contextSaverBadge');
+  if (!badge) return;
+  badge.classList.remove('set', 'warn');
+  if (contextMode === 'off') {
+    badge.textContent = 'off';
+    badge.title = 'Context Saver is off';
+    return;
+  }
+  if (!contextSaverInfo) {
+    badge.textContent = 'checking';
+    badge.title = 'Checking Context Saver status';
+    return;
+  }
+  if (contextSaverInfo.headroomActive) {
+    badge.textContent = 'Headroom';
+    badge.classList.add('set');
+    badge.title = 'Headroom is active';
+    return;
+  }
+  badge.textContent = 'built-in';
+  badge.classList.add(contextSaverInfo.headroomInstalled ? 'warn' : '');
+  badge.title = contextSaverInfo.headroomInstalled
+    ? 'Headroom is installed but not configured. Open details.'
+    : 'Using built-in saver. Open details for Headroom setup.';
+}
+async function refreshContextSaverInfo() {
+  try {
+    contextSaverInfo = await api('/api/context-saver');
+  } catch {
+    contextSaverInfo = null;
+  }
+  updateContextSaverBadge();
+}
+function contextSaverStateText() {
+  if (!contextSaverInfo) return 'Checking current status.';
+  if (contextMode === 'off') return 'Context Saver is off for new runs.';
+  if (contextSaverInfo.headroomActive) return 'Headroom is active for new runs.';
+  if (contextSaverInfo.headroomInstalled)
+    return 'Crew Forge is using the built-in saver. Headroom is installed but not configured.';
+  return 'Crew Forge is using the built-in saver. Headroom is not installed or configured.';
+}
+function openContextSaverInfo() {
+  const headroomActive = contextSaverInfo && contextSaverInfo.headroomActive;
+  $('#contextSaverInfoBody').innerHTML = `<h4>${esc(contextSaverStateText())}</h4>
+    <p><strong>Built-in saver</strong> ships with Crew Forge. It keeps recent turns, summarizes older turns, preserves touched-file hints, and caps context before each model call.</p>
+    <p><strong>Headroom</strong> is optional. Crew Forge can use it only when the optional package and proxy/API are configured for this app.</p>
+    <ul>
+      <li>Install optional package here: <code>npm install headroom-ai</code></li>
+      <li>Start the proxy separately: <code>headroom proxy</code></li>
+      <li>Set <code>HEADROOM_BASE_URL</code> or <code>HEADROOM_API_KEY</code>, then restart Crew Forge.</li>
+    </ul>
+    <p>Installing Headroom for Crew Forge does not automatically install or wrap Claude Code, Codex, or Grok outside this app. Use Headroom Desktop or Headroom wrapper setup if you want those tools covered globally.</p>
+    <p>${headroomActive ? 'The badge will show Headroom while that path is active.' : 'Until then, the badge shows built-in and Crew Forge uses its local saver.'}</p>`;
+  $('#contextSaverModal').classList.add('show');
+}
+function closeContextSaverInfo() {
+  $('#contextSaverModal').classList.remove('show');
 }
 function openConnections() {
   $('#connectionsModal').classList.add('show');
@@ -542,7 +640,9 @@ function initBottomResize() {
     e.preventDefault();
     dragging = true;
     startY = e.clientY;
-    startH = parseInt(getComputedStyle(document.body).getPropertyValue('--bottomh'), 10) || BOTTOM_H_DEFAULT;
+    startH =
+      parseInt(getComputedStyle(document.body).getPropertyValue('--bottomh'), 10) ||
+      BOTTOM_H_DEFAULT;
     handle.classList.add('dragging');
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'row-resize';
@@ -569,7 +669,10 @@ function switchRightTab(name) {
     btn.setAttribute('aria-selected', String(on));
   });
   document.querySelectorAll('.panelPane').forEach((pane) => {
-    pane.classList.toggle('hidden', pane.id !== 'pane' + name.charAt(0).toUpperCase() + name.slice(1));
+    pane.classList.toggle(
+      'hidden',
+      pane.id !== 'pane' + name.charAt(0).toUpperCase() + name.slice(1)
+    );
   });
   localStorage.setItem(RIGHT_TAB_KEY, name);
 }
@@ -591,7 +694,22 @@ function fileExt(name) {
 }
 function fileIcon(name) {
   const ext = fileExt(name);
-  const code = ['js', 'ts', 'jsx', 'tsx', 'mjs', 'cjs', 'py', 'rb', 'go', 'rs', 'java', 'c', 'cpp', 'h'];
+  const code = [
+    'js',
+    'ts',
+    'jsx',
+    'tsx',
+    'mjs',
+    'cjs',
+    'py',
+    'rb',
+    'go',
+    'rs',
+    'java',
+    'c',
+    'cpp',
+    'h',
+  ];
   const data = ['json', 'yaml', 'yml', 'toml', 'env', 'xml', 'csv'];
   const doc = ['md', 'txt', 'rst', 'log'];
   const style = ['css', 'scss', 'sass', 'less'];
@@ -617,8 +735,10 @@ async function openWsFiles(rootPath, navPath) {
   }
   $('#fileTree').innerHTML = '<div class="actEmpty">Loading…</div>';
   try {
-    const url = '/api/fs?includeFiles=1&path=' + encodeURIComponent(fileExplorer.current);
+    const requestedPath = fileExplorer.current;
+    const url = '/api/fs?includeFiles=1&path=' + encodeURIComponent(requestedPath);
     const d = await api(url);
+    if (fileExplorer.current !== requestedPath) return;
     if (d.error) {
       $('#fileTree').innerHTML = `<div class="actEmpty">${esc(d.error)}</div>`;
       return;
@@ -730,7 +850,7 @@ function setDevRunning(running, info) {
   devState.running = running;
   $('#devRun').style.display = running ? 'none' : '';
   $('#devStop').style.display = running ? '' : 'none';
-  $('#termStatus').textContent = running && info ? devStatusText(info) : (running ? '● Running' : '');
+  $('#termStatus').textContent = running && info ? devStatusText(info) : running ? '● Running' : '';
 }
 
 function appendTermLine(text, cls) {
@@ -749,18 +869,27 @@ function clearTermOutput() {
 }
 
 function openDevStream() {
-  if (devState.es) { devState.es.close(); devState.es = null; }
+  if (devState.es) {
+    devState.es.close();
+    devState.es = null;
+  }
   if (!state.ws) return;
   const es = new EventSource('/api/dev/stream?ws=' + encodeURIComponent(state.ws));
   devState.es = es;
   es.onmessage = (ev) => {
     try {
       const d = JSON.parse(ev.data);
-      appendTermLine(d.text, d.type === 'stderr' ? 'stderr' : d.type === 'exit' ? 'exit' : 'stdout');
+      appendTermLine(
+        d.text,
+        d.type === 'stderr' ? 'stderr' : d.type === 'exit' ? 'exit' : 'stdout'
+      );
       if (d.type === 'exit') setDevRunning(false, null);
     } catch {}
   };
-  es.onerror = () => { es.close(); devState.es = null; };
+  es.onerror = () => {
+    es.close();
+    devState.es = null;
+  };
 }
 
 async function startDev() {
@@ -792,7 +921,10 @@ async function stopDev() {
       body: JSON.stringify({ ws: state.ws }),
     });
     setDevRunning(false, null);
-    if (devState.es) { devState.es.close(); devState.es = null; }
+    if (devState.es) {
+      devState.es.close();
+      devState.es = null;
+    }
   } catch (_e) {
     notify('Unable to stop process.');
   }
@@ -814,7 +946,9 @@ async function syncDevStatus() {
 $('#devRun').onclick = startDev;
 $('#devStop').onclick = stopDev;
 $('#devClear').onclick = clearTermOutput;
-$('#devCmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') startDev(); });
+$('#devCmd').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') startDev();
+});
 (function initDevCmd() {
   const saved = localStorage.getItem(DEV_CMD_KEY);
   if (saved) $('#devCmd').value = saved;
@@ -855,7 +989,9 @@ function loadPreview() {
 }
 
 $('#previewLoad').onclick = loadPreview;
-$('#previewUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPreview(); });
+$('#previewUrl').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loadPreview();
+});
 $('#previewUrl').addEventListener('input', () => {
   $('#previewExternal').href = $('#previewUrl').value.trim() || '#';
 });
@@ -867,6 +1003,7 @@ $('#fileFilter').oninput = () => {
 // ---------- bootstrap ----------
 (async () => {
   CAT = await api('/api/catalog');
+  await loadSkills();
   $('#provider').innerHTML = CAT.map(
     (a) =>
       `<option value="${a.id}" data-edit="${a.canEdit}">${esc(a.label)}${a.canEdit ? '' : ' (text only)'}</option>`
@@ -877,12 +1014,28 @@ $('#fileFilter').oninput = () => {
     populateReviewModels();
   };
   $('#model').onchange = updateCaps;
+  $('#contextMode').value = contextMode;
+  $('#contextMode').onchange = () => {
+    contextMode = $('#contextMode').value;
+    localStorage.setItem(CONTEXT_MODE_KEY, contextMode);
+    updateContextSaverBadge();
+    if (contextMode !== 'off' && contextSaverInfo && !contextSaverInfo.headroomActive) {
+      notify('Using built-in Context Saver. Open Connections for Headroom install steps.', 'warn');
+    }
+  };
+  $('#contextSaverBadge').onclick = openContextSaverInfo;
+  $('#contextSaverClose').onclick = closeContextSaverInfo;
+  $('#contextSaverOpenConnections').onclick = () => {
+    closeContextSaverInfo();
+    openConnections();
+  };
   populateComposerModels();
   updateCaps();
   populateReviewModels();
   await loadWorkspaces();
   await loadTeams();
   loadUsage();
+  refreshContextSaverInfo();
   setInterval(loadUsage, 10000);
   if (!localStorage.getItem(ONBOARD_KEY)) openOnboarding();
 })();
@@ -1223,6 +1376,7 @@ async function send() {
         model: $('#model').value,
         mode: state.mode,
         prompt,
+        contextMode,
       }),
     });
     if (r.error) {
@@ -1481,7 +1635,7 @@ async function startReview() {
     const r = await api('/api/review', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ws: state.ws, sid: state.sid, reviewer, reviewerModel }),
+      body: JSON.stringify({ ws: state.ws, sid: state.sid, reviewer, reviewerModel, contextMode }),
     });
     if (r.error) {
       setRunActive(false);
@@ -1500,7 +1654,52 @@ $('#reviewGo').onclick = startReview;
 // ---------- folder browser ----------
 let fsCur = null,
   fsCurIsRepo = false;
-$('#addWs').onclick = () => openFs();
+$('#addWs').onclick = () => pickFolder();
+async function addWorkspacePath(folderPath, options = {}) {
+  const r = await api('/api/workspaces', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: folderPath }),
+  });
+  if (r.error) {
+    if (options.fallbackToBrowser) openFs();
+    notify(r.error);
+    return false;
+  }
+  state.ws = r.id;
+  await loadWorkspaces();
+  if (options.warnNonRepo && !options.isRepo) {
+    notify(
+      'Folder added. It is not a git repository, so Edit/review features are limited.',
+      'warn'
+    );
+  }
+  return true;
+}
+async function pickFolder() {
+  $('#addWs').disabled = true;
+  try {
+    const r = await api('/api/fs/pick-folder', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (r.cancelled) return;
+    if (r.error) {
+      if (r.fallback) {
+        notify('Native folder picker is unavailable here. Using in-app browser.', 'warn');
+        return openFs();
+      }
+      return notify(r.error);
+    }
+    await addWorkspacePath(r.path, { warnNonRepo: true, isRepo: r.isRepo });
+  } catch (_e) {
+    notify('Unable to open native folder picker. Using in-app browser.', 'warn');
+    openFs();
+  } finally {
+    $('#addWs').disabled = false;
+  }
+}
 async function openFs(p) {
   const d = await api('/api/fs' + (p ? '?path=' + encodeURIComponent(p) : ''));
   if (d.error) notify(d.error);
@@ -1530,18 +1729,16 @@ $('#fsUp').onclick = async () => {
 };
 $('#fsCancel').onclick = () => $('#fsModal').classList.remove('show');
 $('#fsUse').onclick = async () => {
-  const r = await api('/api/workspaces', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ path: fsCur }),
-  });
-  if (r.error) return notify(r.error);
-  $('#fsModal').classList.remove('show');
-  state.ws = r.id;
-  await loadWorkspaces();
+  if (await addWorkspacePath(fsCur)) $('#fsModal').classList.remove('show');
 };
 
 // ---------- teams ----------
+async function loadSkills() {
+  SKILLS = await api('/api/skills');
+  refreshTeamSkillSelects();
+  if ($('#skillsModal') && $('#skillsModal').classList.contains('show')) renderSkillEditor();
+}
+
 function modelOptions(selected) {
   return CAT.map((a) => {
     const textOnly = a.canEdit ? '' : ' (text only)';
@@ -1552,6 +1749,99 @@ function modelOptions(selected) {
       )
       .join('');
   }).join('');
+}
+function skillOptions(selectedId) {
+  return (
+    '<option value="">No skill</option>' +
+    SKILLS.map(
+      (s) =>
+        `<option value="${esc(s.id)}" ${selectedId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`
+    ).join('')
+  );
+}
+function refreshTeamSkillSelects() {
+  const selects = [...document.querySelectorAll('.memberSkill')];
+  for (const select of selects) {
+    const selected = select.value;
+    select.innerHTML = skillOptions(selected);
+    select.value = SKILLS.some((skill) => skill.id === selected) ? selected : '';
+  }
+}
+function selectedSkill() {
+  return SKILLS.find((skill) => skill.id === $('#skillPick').value) || null;
+}
+function listField(value) {
+  return Array.isArray(value) ? value.join('\n') : '';
+}
+function fillSkillEditor(skill) {
+  $('#skillName').value = (skill && skill.name) || '';
+  $('#skillRole').value = (skill && skill.role) || '';
+  $('#skillInstructions').value = (skill && skill.instructions) || '';
+  $('#skillExpectedOutputs').value = skill ? listField(skill.expectedOutputs) : '';
+  $('#skillMode').value = skill && skill.preferredMode === 'edit' ? 'edit' : 'plan';
+  $('#skillDelete').disabled = !skill || !skill.custom;
+  $('#skillDelete').textContent = skill && skill.builtIn ? 'Reset' : 'Delete';
+  $('#skillEditorNote').textContent = skill
+    ? skill.custom
+      ? 'This is a local skill. It is stored on this machine and used in team prompts.'
+      : 'Built-in skill. Saving creates a local override; reset returns to the default.'
+    : 'Create a local skill for teams to use in orchestration prompts.';
+}
+function renderSkillEditor(selectId) {
+  const previous = selectId || $('#skillPick').value || (SKILLS[0] && SKILLS[0].id) || '';
+  $('#skillPick').innerHTML =
+    '<option value="">+ New skill</option>' +
+    SKILLS.map((skill) => {
+      const marker = skill.custom ? ' · local' : ' · built-in';
+      return `<option value="${esc(skill.id)}">${esc(skill.name)}${marker}</option>`;
+    }).join('');
+  $('#skillPick').value = SKILLS.some((skill) => skill.id === previous) ? previous : '';
+  fillSkillEditor(selectedSkill());
+}
+function openSkillsModal() {
+  renderSkillEditor();
+  $('#skillsModal').classList.add('show');
+  $('#skillPick').focus();
+}
+function closeSkillsModal() {
+  $('#skillsModal').classList.remove('show');
+}
+async function saveSkillFromEditor() {
+  const current = selectedSkill();
+  const skill = {
+    id: current ? current.id : undefined,
+    name: $('#skillName').value.trim(),
+    role: $('#skillRole').value.trim(),
+    instructions: $('#skillInstructions').value.trim(),
+    expectedOutputs: $('#skillExpectedOutputs')
+      .value.split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean),
+    preferredMode: $('#skillMode').value,
+  };
+  if (!skill.name || !skill.role || !skill.instructions) {
+    return notify('Skill name, role, and instructions are required.', 'warn');
+  }
+  const saved = await api('/api/skills', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ skill }),
+  });
+  if (saved.error) return notify(saved.error);
+  await loadSkills();
+  renderSkillEditor(saved.id);
+  notify('Skill saved.', 'info');
+}
+async function deleteSelectedSkill() {
+  const skill = selectedSkill();
+  if (!skill || !skill.custom) return;
+  const action = skill.builtIn ? 'Reset this skill to the built-in default?' : 'Delete this skill?';
+  if (!confirm(action)) return;
+  const result = await api('/api/skills?id=' + encodeURIComponent(skill.id), { method: 'DELETE' });
+  if (result.error) return notify(result.error);
+  await loadSkills();
+  renderSkillEditor();
+  notify(skill.builtIn ? 'Skill reset.' : 'Skill deleted.', 'info');
 }
 function updateMemberHint(row) {
   const val = row.querySelector('.memberModel').value;
@@ -1573,8 +1863,9 @@ function addMemberRow(member, idx) {
   row.className = 'teamRow';
   row.innerHTML = `<select class="memberModel">${modelOptions(member)}</select>
     <input class="memberRole" placeholder="Role (e.g. reviewer)" value="${esc((member && member.role) || '')}" />
-    <label class="leadLbl"><input type="radio" name="teamLead" value="${idx}" ${idx === editingTeam.leadIndex ? 'checked' : ''} /> Lead</label>
-    <button class="btn ghost rm" type="button">✕</button>`;
+    <select class="memberSkill">${skillOptions(member && member.skillId)}</select>
+    <label class="leadOnly" title="Team lead"><input type="radio" name="teamLead" value="${idx}" ${idx === editingTeam.leadIndex ? 'checked' : ''} aria-label="Team lead" /></label>
+    <button class="btn ghost rm" type="button" aria-label="Remove member">✕</button>`;
   if (sel) row.querySelector('.memberModel').value = sel;
   row.querySelector('.memberModel').onchange = () => updateMemberHint(row);
   updateMemberHint(row);
@@ -1620,7 +1911,12 @@ function collectTeamFromModal() {
   const members = rows
     .map((row) => {
       const [adapter, model] = (row.querySelector('.memberModel').value || '').split('|');
-      return { adapter, model, role: row.querySelector('.memberRole').value.trim() };
+      return {
+        adapter,
+        model,
+        role: row.querySelector('.memberRole').value.trim(),
+        skillId: row.querySelector('.memberSkill').value || undefined,
+      };
     })
     .filter((m) => m.adapter);
   let leadIndex = [...$('#teamMembers').querySelectorAll('input[name=teamLead]')].findIndex(
@@ -1707,7 +2003,7 @@ async function delegateToTeam() {
     const r = await api('/api/plan', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ws: state.ws, sid: state.sid, teamId: team.id, prompt }),
+      body: JSON.stringify({ ws: state.ws, sid: state.sid, teamId: team.id, prompt, contextMode }),
     });
     if (r.cancelled) {
       setRunActive(false);
@@ -1742,7 +2038,13 @@ async function approvePlan() {
     const r = await api('/api/approve', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ws: state.ws, sid: state.sid, teamId: planDraft.teamId, steps }),
+      body: JSON.stringify({
+        ws: state.ws,
+        sid: state.sid,
+        teamId: planDraft.teamId,
+        steps,
+        contextMode,
+      }),
     });
     if (r.error) {
       $('#planApprove').disabled = false;
@@ -1752,10 +2054,10 @@ async function approvePlan() {
     hidePlan();
     startActivityPoll();
     loadUsage();
-  } catch (_e) {
+  } catch (e) {
     $('#planApprove').disabled = false;
     setRunActive(false);
-    notify('Unable to approve team plan.');
+    if (!e.sessionExpired) notify('Unable to approve team plan.');
   }
 }
 $('#delegate').onclick = delegateToTeam;
@@ -1771,6 +2073,16 @@ $('#addMember').onclick = () => {
   addMemberRow(null, $('#teamMembers').querySelectorAll('.teamRow').length);
   reindexLeadRadios();
 };
+$('#editSkills').onclick = openSkillsModal;
+$('#skillPick').onchange = () => fillSkillEditor(selectedSkill());
+$('#skillNew').onclick = () => {
+  $('#skillPick').value = '';
+  fillSkillEditor(null);
+  $('#skillName').focus();
+};
+$('#skillSave').onclick = saveSkillFromEditor;
+$('#skillDelete').onclick = deleteSelectedSkill;
+$('#skillsCancel').onclick = closeSkillsModal;
 $('#teamCancel').onclick = () => $('#teamModal').classList.remove('show');
 $('#teamSave').onclick = async () => {
   const team = collectTeamFromModal();

@@ -18,6 +18,7 @@ Crew Forge is intended for technical beta testers who understand Git, local deve
 - Confirm `git status` works in the workspace you plan to add.
 - Confirm the provider CLI you want to use is installed and logged in on the same machine running Crew Forge.
 - Confirm the app opens on a `127.0.0.1` URL unless you intentionally configured remote access with `CREW_FORGE_AUTH_TOKEN` and opened it once with `?token=<value>`.
+- Leave `Context Saver` on `Balanced` for normal testing. Try `Maximum` only on long sessions where older detail is less important.
 
 ## Updating From Earlier Local Builds
 
