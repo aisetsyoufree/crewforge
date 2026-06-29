@@ -22,7 +22,7 @@
   /* custom dropdown arrow for dark mode */
   --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238b94a7' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
-[data-theme="light"] {
+[data-theme='light'] {
   --bg: #f2f4f8;
   --panel: #ffffff;
   --panel2: #eaecf2;
@@ -32,11 +32,11 @@
   --bg-gradient: #dce4f5;
   --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2364748b' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
-[data-theme="light"] ::-webkit-scrollbar-thumb {
+[data-theme='light'] ::-webkit-scrollbar-thumb {
   background: #c4cad8;
   border: 2px solid var(--panel);
 }
-[data-theme="light"] .rateBanner {
+[data-theme='light'] .rateBanner {
   background: #fff8e1;
   border-color: #e5a800;
   color: #a36200;
@@ -54,13 +54,7 @@ body {
   color: var(--text);
   font-size: var(--ui-font-size);
   line-height: 1.55;
-  font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    Inter,
-    system-ui,
-    sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif;
   display: grid;
   grid-template-columns: var(--leftw) minmax(0, 1fr) var(--rightw);
   height: 100vh;
@@ -775,11 +769,19 @@ main {
   border-color: var(--claude);
 }
 /* provider/model dropdowns sized for their content */
-#provider.ctrlSel { min-width: 90px; }
-#model.ctrlSel    { min-width: 120px; }
+#provider.ctrlSel {
+  min-width: 90px;
+}
+#model.ctrlSel {
+  min-width: 120px;
+}
 /* context selects are narrower */
-#contextProvider.ctrlSel { min-width: 88px; }
-#contextMode.ctrlSel     { min-width: 100px; }
+#contextProvider.ctrlSel {
+  min-width: 88px;
+}
+#contextMode.ctrlSel {
+  min-width: 100px;
+}
 
 .ctrlGroup {
   display: flex;
@@ -1829,7 +1831,7 @@ select.model {
   border-color: #2a4a3a;
   font-size: 10px;
 }
-[data-theme="light"] .saverChip {
+[data-theme='light'] .saverChip {
   color: #2a7a5a;
   border-color: #b0d8c8;
 }
@@ -1865,10 +1867,12 @@ select.model {
   border-radius: 9px;
   overflow: hidden;
   min-width: 170px;
-  box-shadow: 0 4px 18px rgba(0,0,0,.35);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
   z-index: 200;
 }
-.splitDropdown[hidden] { display: none; }
+.splitDropdown[hidden] {
+  display: none;
+}
 .splitOpt {
   display: block;
   width: 100%;
@@ -1889,20 +1893,29 @@ select.model {
 }
 
 /* Iteration 2: composer provider readiness, actionable checklist, advanced toggle */
-.provReady { color: var(--ok); }
-.provNotReady { color: var(--warn); }
+.provReady {
+  color: var(--ok);
+}
+.provNotReady {
+  color: var(--warn);
+}
 .checkRow.actionable {
   width: 100%;
   text-align: left;
   cursor: pointer;
   font: inherit;
-  transition: border-color .12s, background .12s;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
 }
 .checkRow.actionable:hover {
   border-color: var(--claude);
   background: color-mix(in srgb, var(--claude) 9%, var(--panel2));
 }
-.checkGo { color: var(--claude); font-weight: 700; }
+.checkGo {
+  color: var(--claude);
+  font-weight: 700;
+}
 .advToggle {
   background: none;
   border: 1px solid var(--line);
@@ -1913,8 +1926,15 @@ select.model {
   font-size: 12px;
   cursor: pointer;
 }
-.advToggle:hover { color: var(--text); border-color: var(--claude); }
-.advToggle.on { color: var(--text); border-color: var(--claude); background: var(--panel2); }
+.advToggle:hover {
+  color: var(--text);
+  border-color: var(--claude);
+}
+.advToggle.on {
+  color: var(--text);
+  border-color: var(--claude);
+  background: var(--panel2);
+}
 
 .teamIntro {
   margin: 0;
@@ -1925,4 +1945,7 @@ select.model {
   background: var(--panel2);
   border-bottom: 1px solid var(--line);
 }
-.teamIntro strong { color: var(--text); font-weight: 600; }
+.teamIntro strong {
+  color: var(--text);
+  font-weight: 600;
+}

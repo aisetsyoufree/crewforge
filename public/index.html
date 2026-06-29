@@ -8,13 +8,45 @@
   <div class="brand">
     <div class="brandTop">
       <h1>Crew Forge</h1>
-      <button class="iconBtn" id="onboardingBtn" type="button" title="Get started" aria-label="Get started">?</button>
-      <button class="iconBtn" id="connectionsBtn" type="button" title="Connections" aria-label="Connections">⚙</button>
-      <button class="iconBtn" id="themeToggle" type="button" title="Toggle light/dark mode" aria-label="Toggle theme">☀</button>
+      <button
+        class="iconBtn"
+        id="onboardingBtn"
+        type="button"
+        title="Get started"
+        aria-label="Get started"
+      >
+        ?
+      </button>
+      <button
+        class="iconBtn"
+        id="connectionsBtn"
+        type="button"
+        title="Connections"
+        aria-label="Connections"
+      >
+        ⚙
+      </button>
+      <button
+        class="iconBtn"
+        id="themeToggle"
+        type="button"
+        title="Toggle light/dark mode"
+        aria-label="Toggle theme"
+      >
+        ☀
+      </button>
     </div>
     <div class="brandControls">
       <span class="fontSizerA">A</span>
-      <input type="range" id="fontSizeSlider" min="12" max="18" step="1" value="14" aria-label="Font size">
+      <input
+        type="range"
+        id="fontSizeSlider"
+        min="12"
+        max="18"
+        step="1"
+        value="14"
+        aria-label="Font size"
+      />
       <span class="fontSizerA fontSizerALg">A</span>
     </div>
     <div class="dots">
@@ -66,7 +98,9 @@
       <div class="ws" id="wsName">No workspace</div>
       <div class="path" id="wsPath">pick or add a folder to begin</div>
     </div>
-    <button class="btn ghost topStop" id="topStop" type="button" style="display:none">■ Stop</button>
+    <button class="btn ghost topStop" id="topStop" type="button" style="display: none">
+      ■ Stop
+    </button>
     <div class="legend">
       <span><i style="background: var(--claude)"></i>Claude</span>
       <span><i style="background: var(--codex)"></i>Codex</span>
@@ -102,7 +136,15 @@
           <option value="maximum">Maximum</option>
         </select>
       </div>
-      <button class="advToggle" id="advToggle" type="button" title="Context compression settings" aria-expanded="false">⋯ Advanced</button>
+      <button
+        class="advToggle"
+        id="advToggle"
+        type="button"
+        title="Context compression settings"
+        aria-expanded="false"
+      >
+        ⋯ Advanced
+      </button>
       <span id="caps" class="capsMuted"></span>
     </div>
     <textarea
@@ -116,7 +158,15 @@
       </button>
       <div class="splitBtn" id="splitBtn" style="margin-left: auto">
         <button class="btn primary splitMain" id="send" type="button">Send ▶</button>
-        <button class="btn primary splitCaret" id="splitCaret" type="button" aria-label="More send options" style="display:none">&#8964;</button>
+        <button
+          class="btn primary splitCaret"
+          id="splitCaret"
+          type="button"
+          aria-label="More send options"
+          style="display: none"
+        >
+          &#8964;
+        </button>
         <div class="splitDropdown" id="splitDropdown" hidden>
           <button class="splitOpt" id="sendDirect" type="button">Send to model</button>
           <button class="splitOpt" id="delegate" type="button">Delegate to team</button>
@@ -348,10 +398,10 @@
   <div class="card teamCard">
     <h3 id="teamModalTitle">New team</h3>
     <p class="teamIntro">
-      How delegation works: the <strong>lead</strong> model reads your request and the
-      workspace, breaks it into steps, and assigns each step to the <strong>member</strong>
-      whose role/skill fits best. Each member runs with the effort you set. Add members below,
-      pick one as lead, then use the <strong>▾ next to Send → Delegate to team</strong> to run it.
+      How delegation works: the <strong>lead</strong> model reads your request and the workspace,
+      breaks it into steps, and assigns each step to the <strong>member</strong> whose role/skill
+      fits best. Each member runs with the effort you set. Add members below, pick one as lead, then
+      use the <strong>▾ next to Send → Delegate to team</strong> to run it.
     </p>
     <div style="padding: 12px 16px; border-bottom: 1px solid var(--line)">
       <label
@@ -467,7 +517,6 @@
     </div>
   </div>
 </div>
-
 
 <div class="toastStack" id="toastStack" aria-live="polite"></div>
 

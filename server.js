@@ -62,7 +62,10 @@ const { execFile, spawn } = require('child_process');
       const eq = line.indexOf('=');
       if (eq < 1) continue;
       const key = line.slice(0, eq).trim();
-      const val = line.slice(eq + 1).trim().replace(/^(['"])(.*)\1$/, '$2');
+      const val = line
+        .slice(eq + 1)
+        .trim()
+        .replace(/^(['"])(.*)\1$/, '$2');
       if (key && !(key in process.env)) process.env[key] = val;
     }
   } catch {
@@ -153,6 +156,25 @@ function tokenizeCommand(cmd) {
   return tokens;
 }
 
+function assertWorkspaceBoundDevCommand(argv) {
+  const fail = (message) => {
+    const e = new Error(message);
+    e.userSafe = true;
+    throw e;
+  };
+  const [bin, ...args] = argv;
+  if (!bin) fail('No command to run.');
+  if (bin.includes('/') || bin.includes('\\'))
+    fail('Use a command from PATH or an npm/package script, not a path to an executable.');
+  for (const arg of args) {
+    if (path.isAbsolute(arg) || arg.split(/[\\/]/).includes('..')) {
+      fail(
+        'Dev server commands cannot reference absolute paths or parent directories. Put workspace-local commands in an npm/package script and run that.'
+      );
+    }
+  }
+}
+
 function startDevProc(wsId, wsPath, cmd) {
   const argv = tokenizeCommand(cmd);
   // Run with an allowlisted env (never the full process.env, which holds API keys).
@@ -161,7 +183,14 @@ function startDevProc(wsId, wsPath, cmd) {
   // DYLD_*, NODE_OPTIONS) or arbitrary secrets.
   const env = safeCliEnv();
   const DEV_ENV_ALLOW = new Set([
-    'PORT', 'HOST', 'NODE_ENV', 'DEBUG', 'BROWSER', 'HTTPS', 'CI', 'FORCE_COLOR',
+    'PORT',
+    'HOST',
+    'NODE_ENV',
+    'DEBUG',
+    'BROWSER',
+    'HTTPS',
+    'CI',
+    'FORCE_COLOR',
   ]);
   while (argv.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[0])) {
     const eq = argv[0].indexOf('=');
@@ -174,6 +203,7 @@ function startDevProc(wsId, wsPath, cmd) {
     e.userSafe = true;
     throw e;
   }
+  assertWorkspaceBoundDevCommand(argv);
   stopDevProc(wsId);
   const [bin, ...args] = argv;
   const proc = spawn(bin, args, { cwd: wsPath, env, shell: false });
@@ -244,7 +274,7 @@ const SECURITY_HEADERS = {
     "connect-src 'self'",
     "form-action 'none'",
     "frame-ancestors 'none'",
-    "frame-src 'self' http://localhost:* http://127.0.0.1:*",
+    "frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*",
     "img-src 'self' data:",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
@@ -622,7 +652,11 @@ const server = http.createServer(async (req, res) => {
   if (!isAllowedLocalRequest(req, p)) return reject(res, 403, 'forbidden origin');
   if (!isAllowedApiSession(req, p, u)) return reject(res, 401, 'missing app session');
   if (req.method === 'POST' && !isJsonRequest(req)) return reject(res, 415, 'expected JSON body');
-  if ((req.method === 'POST' || req.method === 'DELETE') && p.startsWith('/api/') && !passesCsrf(req, u))
+  if (
+    (req.method === 'POST' || req.method === 'DELETE') &&
+    p.startsWith('/api/') &&
+    !passesCsrf(req, u)
+  )
     return reject(res, 403, 'missing or invalid CSRF token');
 
   try {
@@ -1124,7 +1158,11 @@ const server = http.createServer(async (req, res) => {
         meta: { running: true },
       });
 
-      const fullPrompt = await buildContext(ws, sid, prompt, { contextMode, provider: contextProvider, model });
+      const fullPrompt = await buildContext(ws, sid, prompt, {
+        contextMode,
+        provider: contextProvider,
+        model,
+      });
       adapters
         .run(
           adapter,
@@ -1215,6 +1253,7 @@ const server = http.createServer(async (req, res) => {
       const wsId = u.searchParams.get('ws');
       if (!wsId || !store.isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
       res.writeHead(200, {
+        ...SECURITY_HEADERS,
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',

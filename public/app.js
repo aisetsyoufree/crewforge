@@ -39,8 +39,8 @@ let sessionSort = localStorage.getItem(SESSION_SORT_KEY) || 'newest';
 if (sessionSort !== 'newest' && sessionSort !== 'oldest') sessionSort = 'newest';
 let contextMode = localStorage.getItem(CONTEXT_MODE_KEY) || 'balanced';
 if (!['off', 'balanced', 'maximum'].includes(contextMode)) contextMode = 'balanced';
-let contextProvider = localStorage.getItem(CONTEXT_PROVIDER_KEY) || 'headroom';
-if (!['builtin', 'headroom'].includes(contextProvider)) contextProvider = 'headroom';
+let contextProvider = localStorage.getItem(CONTEXT_PROVIDER_KEY) || 'builtin';
+if (!['builtin', 'headroom'].includes(contextProvider)) contextProvider = 'builtin';
 let contextSaverInfo = null;
 
 // ── theme ──────────────────────────────────────────────────
@@ -52,7 +52,9 @@ function applyTheme(theme) {
   if (btn) btn.textContent = theme === 'light' ? '☽' : '☀';
   localStorage.setItem(THEME_KEY, theme);
 }
-function toggleTheme() { applyTheme(currentTheme === 'light' ? 'dark' : 'light'); }
+function toggleTheme() {
+  applyTheme(currentTheme === 'light' ? 'dark' : 'light');
+}
 applyTheme(currentTheme);
 
 // ── font size ──────────────────────────────────────────────
@@ -243,8 +245,7 @@ function notify(message, level = 'error') {
   setTimeout(() => toast.remove(), level === 'info' ? 2500 : 7000);
 }
 
-const CSRF_TOKEN =
-  document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 let _sessionExpired = false;
 async function api(p, opt) {
   const o = opt ? { ...opt } : {};
@@ -302,7 +303,10 @@ function updateRunControls() {
   $('#stop').style.display = active ? 'inline-block' : 'none';
   $('#stop').disabled = false;
   const topStop = $('#topStop');
-  if (topStop) { topStop.style.display = active ? 'inline-flex' : 'none'; topStop.disabled = false; }
+  if (topStop) {
+    topStop.style.display = active ? 'inline-flex' : 'none';
+    topStop.disabled = false;
+  }
   $('#splitCaret').disabled = active;
   $('#delegate').disabled = active;
   $('#reviewBtn').disabled = active || activity.notRepo;
@@ -357,7 +361,11 @@ function renderContextSaverStatus(saver) {
     $('#contextSaverStatus').innerHTML = '';
     return;
   }
-  const hrState = saver.headroomActive ? 'Active' : saver.headroomInstalled ? 'Installed — needs proxy/API key' : 'Not installed (optional)';
+  const hrState = saver.headroomActive
+    ? 'Active'
+    : saver.headroomInstalled
+      ? 'Installed — needs proxy/API key'
+      : 'Not installed (optional)';
   const hrClass = saver.headroomActive ? 'set' : saver.headroomInstalled ? 'warn' : '';
   const setupRows = saver.headroomActive
     ? ''
@@ -378,7 +386,9 @@ function updateContextSaverUI() {
   const hrOpt = provSel.querySelector('option[value="headroom"]');
   if (!hrOpt) return;
   if (contextSaverInfo && !contextSaverInfo.headroomActive) {
-    hrOpt.textContent = contextSaverInfo.headroomInstalled ? 'Headroom (needs config)' : 'Headroom (not installed)';
+    hrOpt.textContent = contextSaverInfo.headroomInstalled
+      ? 'Headroom (needs config)'
+      : 'Headroom (not installed)';
   } else if (contextSaverInfo && contextSaverInfo.headroomActive) {
     hrOpt.textContent = 'Headroom ✓';
   } else {
@@ -1025,6 +1035,7 @@ function loadPreview() {
   const url = $('#previewUrl').value.trim();
   if (!url) return;
   if (!isAllowedPreviewUrl(url)) {
+    $('#previewExternal').href = '#';
     notify('Preview only supports local URLs (http://localhost:* or 127.0.0.1:*).');
     return;
   }
@@ -1037,7 +1048,8 @@ $('#previewUrl').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') loadPreview();
 });
 $('#previewUrl').addEventListener('input', () => {
-  $('#previewExternal').href = $('#previewUrl').value.trim() || '#';
+  const url = $('#previewUrl').value.trim();
+  $('#previewExternal').href = url && isAllowedPreviewUrl(url) ? url : '#';
 });
 $('#fileFilter').oninput = () => {
   fileExplorer.filter = $('#fileFilter').value.trim().toLowerCase();
@@ -1134,7 +1146,10 @@ function updateCaps() {
   if (a) {
     const h = providerReadiness(a.id);
     let badge = '';
-    if (h) badge = h.ready ? ' · <span class="provReady">● ready</span>' : ' · <span class="provNotReady">● needs setup</span>';
+    if (h)
+      badge = h.ready
+        ? ' · <span class="provReady">● ready</span>'
+        : ' · <span class="provNotReady">● needs setup</span>';
     caps.innerHTML = `models: ${esc(a.models.join(', '))}${badge}`;
   } else {
     caps.textContent = '';
@@ -1176,7 +1191,10 @@ function providersKnown() {
 }
 function firstBlocker() {
   if (providersKnown() && !anyProviderReady())
-    return { reason: 'Connect a model first — open Connections (⚙) and sign in to a provider.', action: 'connections' };
+    return {
+      reason: 'Connect a model first — open Connections (⚙) and sign in to a provider.',
+      action: 'connections',
+    };
   if (!state.ws)
     return { reason: 'Add a workspace folder to begin (＋ Add folder).', action: 'workspace' };
   return null;
@@ -1431,7 +1449,9 @@ function render(e) {
       const statParts = [];
       if (elapsedStr) statParts.push(esc(elapsedStr));
       if (usage && usage.input_tokens != null)
-        statParts.push(`↗ ${fmtNum(usage.input_tokens)} in / ${fmtNum(usage.output_tokens || 0)} out`);
+        statParts.push(
+          `↗ ${fmtNum(usage.input_tokens)} in / ${fmtNum(usage.output_tokens || 0)} out`
+        );
       const statsHtml = statParts.length
         ? ` <span class="stepStats">${statParts.join(' · ')}</span>`
         : '';
@@ -1500,8 +1520,7 @@ function render(e) {
   if (type === 'usage') {
     const inp = meta && (meta.input_tokens || meta.inputTokens);
     const out = meta && (meta.output_tokens || meta.outputTokens);
-    const usageTxt =
-      inp != null ? `↗ ${fmtNum(inp)} in / ${fmtNum(out || 0)} out` : esc(text);
+    const usageTxt = inp != null ? `↗ ${fmtNum(inp)} in / ${fmtNum(out || 0)} out` : esc(text);
     appendHTML(`<div class="chip usageChip">${usageTxt}</div>`);
     return;
   }
@@ -1824,7 +1843,14 @@ async function startReview() {
     const r = await api('/api/review', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ws: state.ws, sid: state.sid, reviewer, reviewerModel, contextMode, contextProvider }),
+      body: JSON.stringify({
+        ws: state.ws,
+        sid: state.sid,
+        reviewer,
+        reviewerModel,
+        contextMode,
+        contextProvider,
+      }),
     });
     if (r.error) {
       setRunActive(false);
@@ -2049,7 +2075,8 @@ function updateMemberHint(row) {
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'];
 function effortOptions(current) {
   return EFFORT_LEVELS.map(
-    (e) => `<option value="${e}"${e === (current || 'medium') ? ' selected' : ''}>${e.charAt(0).toUpperCase() + e.slice(1)}</option>`
+    (e) =>
+      `<option value="${e}"${e === (current || 'medium') ? ' selected' : ''}>${e.charAt(0).toUpperCase() + e.slice(1)}</option>`
   ).join('');
 }
 function addMemberRow(member, idx) {
@@ -2190,7 +2217,9 @@ function hidePlan() {
 async function delegateToTeam() {
   if (!state.ws) return notify('Add/select a workspace first');
   if (activity.notRepo)
-    return notify('Team delegation needs a git workspace (so each member’s edits are reviewable). This folder isn’t a git repo.');
+    return notify(
+      'Team delegation needs a git workspace (so each member’s edits are reviewable). This folder isn’t a git repo.'
+    );
   if (state.activeRun) return notify('A run is already active in this session.');
   const team = activeTeam();
   if (!team) return notify('Select a team first');
@@ -2203,7 +2232,14 @@ async function delegateToTeam() {
     const r = await api('/api/plan', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ws: state.ws, sid: state.sid, teamId: team.id, prompt, contextMode, contextProvider }),
+      body: JSON.stringify({
+        ws: state.ws,
+        sid: state.sid,
+        teamId: team.id,
+        prompt,
+        contextMode,
+        contextProvider,
+      }),
     });
     if (r.cancelled) {
       setRunActive(false);
@@ -2261,14 +2297,22 @@ async function approvePlan() {
     if (!e.sessionExpired) notify('Unable to approve team plan.');
   }
 }
-$('#delegate').onclick = () => { closeSplitDropdown(); delegateToTeam(); };
-$('#sendDirect').onclick = () => { closeSplitDropdown(); send(); };
+$('#delegate').onclick = () => {
+  closeSplitDropdown();
+  delegateToTeam();
+};
+$('#sendDirect').onclick = () => {
+  closeSplitDropdown();
+  send();
+};
 $('#splitCaret').onclick = (e) => {
   e.stopPropagation();
   const dd = $('#splitDropdown');
   dd.hidden = !dd.hidden;
 };
-function closeSplitDropdown() { $('#splitDropdown').hidden = true; }
+function closeSplitDropdown() {
+  $('#splitDropdown').hidden = true;
+}
 document.addEventListener('click', () => closeSplitDropdown());
 $('#teamPick').onchange = () => setActiveTeam($('#teamPick').value);
 $('#newTeam').onclick = () => openTeamModal(null);
