@@ -79,6 +79,7 @@ const skills = require('./lib/skills');
 const usage = require('./lib/usage');
 const { buildReviewPrompt } = require('./lib/review');
 const keys = require('./lib/keys');
+const { safeCliEnv } = require('./adapters/base');
 
 const PORT = Number(process.argv[2]) || 4178;
 const ROOT = __dirname;
@@ -107,13 +108,74 @@ const activeRuns = new Map();
 // ---------- dev process registry ----------
 const devProcs = new Map(); // wsId -> { proc, cmd, pid, output[], listeners }
 
+// Shell operators we will not interpret (no shell is spawned). Presence => reject.
+const SHELL_META = /(\|\||&&|[;|&<>`\n]|\$\(|\$\{)/;
+
+// Split a shell-like command line into argv, honoring single/double quotes.
+// Throws a user-safe error on shell metacharacters or unbalanced quotes so the
+// dev runner can never become an arbitrary-shell-execution sink.
+function tokenizeCommand(cmd) {
+  if (SHELL_META.test(cmd)) {
+    const e = new Error(
+      'Command contains shell operators (| & ; < > $() etc.). For safety the dev runner executes without a shell — put complex commands in an npm/package script and run that.'
+    );
+    e.userSafe = true;
+    throw e;
+  }
+  const tokens = [];
+  let cur = '';
+  let quote = null;
+  let started = false;
+  for (const c of cmd) {
+    if (quote) {
+      if (c === quote) quote = null;
+      else cur += c;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+      started = true;
+    } else if (c === ' ' || c === '\t') {
+      if (started) {
+        tokens.push(cur);
+        cur = '';
+        started = false;
+      }
+    } else {
+      cur += c;
+      started = true;
+    }
+  }
+  if (quote) {
+    const e = new Error('Unbalanced quotes in command.');
+    e.userSafe = true;
+    throw e;
+  }
+  if (started) tokens.push(cur);
+  return tokens;
+}
+
 function startDevProc(wsId, wsPath, cmd) {
+  const argv = tokenizeCommand(cmd);
+  // Run with an allowlisted env (never the full process.env, which holds API keys).
+  // Leading KEY=VALUE assignments are pulled in so e.g. "PORT=3000 npm start" works.
+  const env = safeCliEnv();
+  while (argv.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[0])) {
+    const eq = argv[0].indexOf('=');
+    env[argv[0].slice(0, eq)] = argv[0].slice(eq + 1);
+    argv.shift();
+  }
+  if (!argv.length) {
+    const e = new Error('No command to run.');
+    e.userSafe = true;
+    throw e;
+  }
   stopDevProc(wsId);
-  const proc = spawn(cmd, [], { cwd: wsPath, env: { ...process.env }, shell: true });
+  const [bin, ...args] = argv;
+  const proc = spawn(bin, args, { cwd: wsPath, env, shell: false });
   const info = { proc, cmd, pid: proc.pid, output: [], listeners: new Set() };
   devProcs.set(wsId, info);
   const pushLine = (text, type) => {
-    const ev = { type, text: text.trimEnd(), ts: Date.now() };
+    const capped = text.length > 8192 ? text.slice(0, 8192) + '…[truncated]' : text;
+    const ev = { type, text: capped.trimEnd(), ts: Date.now() };
     info.output.push(ev);
     if (info.output.length > 2000) info.output.splice(0, info.output.length - 2000);
     for (const fn of info.listeners) fn(ev);
@@ -162,6 +224,8 @@ const HOST_IS_REMOTE = !isLoopbackHost(HOST);
 const HOME = path.resolve(os.homedir());
 const SESSION_COOKIE = 'crewforge_session';
 const SESSION_TOKEN = AUTH_TOKEN_ENV || cryptoRandomToken();
+const SESSION_MAX_AGE = 60 * 60 * 24; // 1 day
+const CSRF_TOKEN = cryptoRandomToken();
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -224,7 +288,23 @@ function hasRequestToken(req, url) {
   return [bearer && bearer[1], headerToken, queryToken].some((token) => token === AUTH_TOKEN_ENV);
 }
 function sessionCookieHeader() {
-  return `${SESSION_COOKIE}=${encodeURIComponent(SESSION_TOKEN)}; Path=/; HttpOnly; SameSite=Strict`;
+  let h = `${SESSION_COOKIE}=${encodeURIComponent(SESSION_TOKEN)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MAX_AGE}`;
+  if (HOST_IS_REMOTE) h += '; Secure'; // remote deployments must be served over TLS
+  return h;
+}
+// Redact absolute filesystem paths from error text before returning to the client,
+// so host directory structure isn't disclosed. Preserves the rest of the message.
+function safeErrMsg(e) {
+  let m = String((e && (e.stderr || e.message)) || e || 'error');
+  if (HOME) m = m.split(HOME).join('~');
+  m = m.replace(/(?:\/(?:Users|home)\/[^\s'":]+)/g, '<path>');
+  return m.length > 400 ? m.slice(0, 400) + '…' : m;
+}
+// Cookie-authenticated mutating requests must echo the CSRF token served in the page.
+// Token-authenticated (Bearer/header/query) clients are not cookie-based, so exempt.
+function passesCsrf(req, url) {
+  if (hasRequestToken(req, url)) return true;
+  return req.headers['x-csrf-token'] === CSRF_TOKEN;
 }
 const isJsonRequest = (req) => {
   const contentType = String(req.headers['content-type'] || '').toLowerCase();
@@ -536,16 +616,21 @@ const server = http.createServer(async (req, res) => {
   if (!isAllowedLocalRequest(req, p)) return reject(res, 403, 'forbidden origin');
   if (!isAllowedApiSession(req, p, u)) return reject(res, 401, 'missing app session');
   if (req.method === 'POST' && !isJsonRequest(req)) return reject(res, 415, 'expected JSON body');
+  if ((req.method === 'POST' || req.method === 'DELETE') && p.startsWith('/api/') && !passesCsrf(req, u))
+    return reject(res, 403, 'missing or invalid CSRF token');
 
   try {
     if (req.method === 'GET' && p === '/') {
       if (AUTH_TOKEN_ENV && !hasSessionCookie(req) && !hasRequestToken(req, u))
         return reject(res, 401, 'missing app token');
+      const html = fs
+        .readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8')
+        .replace('<title>', `<meta name="csrf-token" content="${CSRF_TOKEN}" />\n<title>`);
       return send(
         res,
         200,
         { 'Content-Type': 'text/html; charset=utf-8', 'Set-Cookie': sessionCookieHeader() },
-        fs.readFileSync(path.join(ROOT, 'public', 'index.html'))
+        html
       );
     }
     if (req.method === 'GET' && STATIC_ASSETS[p]) {
@@ -586,7 +671,7 @@ const server = http.createServer(async (req, res) => {
         process.env[envName] = keys.get(id);
         return json(res, 200, { provider: id, set: true, masked });
       } catch (e) {
-        return json(res, 400, { error: e.message });
+        return json(res, 400, { error: safeErrMsg(e) });
       }
     }
     if (req.method === 'DELETE' && p === '/api/keys') {
@@ -639,7 +724,7 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (e) {
         return json(res, 400, {
-          error: e.message,
+          error: safeErrMsg(e),
           path: abs,
           parent: HOME,
           isRepo: false,
@@ -658,7 +743,7 @@ const server = http.createServer(async (req, res) => {
         const message = String((e && (e.stderr || e.message)) || e);
         if (/user canceled/i.test(message)) return json(res, 200, { cancelled: true });
         if (e && e.code === 'UNSUPPORTED_PLATFORM')
-          return json(res, 501, { error: e.message, fallback: true });
+          return json(res, 501, { error: safeErrMsg(e), fallback: true });
         return json(res, 400, { error: message.trim() || 'Unable to choose folder' });
       }
     }
@@ -674,7 +759,7 @@ const server = http.createServer(async (req, res) => {
         assertSafePath(path.resolve(wp));
         return json(res, 200, store.addWorkspace(wp));
       } catch (e) {
-        return json(res, 400, { error: e.message });
+        return json(res, 400, { error: safeErrMsg(e) });
       }
     }
     if (req.method === 'DELETE' && p === '/api/workspaces') {
@@ -761,7 +846,7 @@ const server = http.createServer(async (req, res) => {
           maxBuffer: 20 * 1024 * 1024,
         });
       } catch (e) {
-        return json(res, 400, { error: e.message });
+        return json(res, 400, { error: safeErrMsg(e) });
       }
 
       const changes = watcher.getChanges(wsObj.path);
@@ -950,7 +1035,7 @@ const server = http.createServer(async (req, res) => {
           text: 'Team delegation planning failed',
           meta: { done: true, failed: true },
         });
-        return json(res, 500, { error: e.message });
+        return json(res, 500, { error: safeErrMsg(e) });
       } finally {
         finishRun(run.key, run.controller);
       }
@@ -975,7 +1060,7 @@ const server = http.createServer(async (req, res) => {
       try {
         orchestrator.validateSteps(steps, team.members.length);
       } catch (e) {
-        return json(res, 400, { error: e.message });
+        return json(res, 400, { error: safeErrMsg(e) });
       }
       const run = startRun(ws, sid);
       if (!run) return json(res, 409, { error: 'run already active for this session' });
@@ -1090,7 +1175,13 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: 'cmd required' });
       const wsObj = store.listWorkspaces().find((w) => w.id === wsId);
       if (!wsObj) return json(res, 404, { error: 'unknown workspace' });
-      const info = startDevProc(wsId, wsObj.path, cmd.trim());
+      let info;
+      try {
+        info = startDevProc(wsId, wsObj.path, cmd.trim());
+      } catch (e) {
+        if (e && e.userSafe) return json(res, 400, { error: e.message });
+        throw e;
+      }
       return json(res, 200, { ok: true, pid: info.pid });
     }
 
@@ -1141,7 +1232,7 @@ const server = http.createServer(async (req, res) => {
 
     json(res, 404, { error: 'not found' });
   } catch (e) {
-    json(res, 500, { error: e.message });
+    json(res, 500, { error: safeErrMsg(e) });
   }
 });
 

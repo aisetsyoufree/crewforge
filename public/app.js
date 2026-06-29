@@ -243,9 +243,17 @@ function notify(message, level = 'error') {
   setTimeout(() => toast.remove(), level === 'info' ? 2500 : 7000);
 }
 
+const CSRF_TOKEN =
+  document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 let _sessionExpired = false;
 async function api(p, opt) {
-  const r = await fetch(p, opt);
+  const o = opt ? { ...opt } : {};
+  const method = (o.method || 'GET').toUpperCase();
+  // Mutating requests must carry the CSRF token the server injected into the page.
+  if (method !== 'GET' && method !== 'HEAD') {
+    o.headers = { ...(o.headers || {}), 'X-CSRF-Token': CSRF_TOKEN };
+  }
+  const r = await fetch(p, o);
   if (r.status === 401) {
     if (!_sessionExpired) {
       _sessionExpired = true;
@@ -1001,9 +1009,25 @@ $('#agentLogToggle').onclick = () => {
 };
 
 // ---------- preview pane ----------
+// Only allow previewing local dev servers — blocks javascript:/data: URIs and
+// arbitrary remote hosts that could phish or escape the sandbox.
+function isAllowedPreviewUrl(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]';
+}
 function loadPreview() {
   const url = $('#previewUrl').value.trim();
   if (!url) return;
+  if (!isAllowedPreviewUrl(url)) {
+    notify('Preview only supports local URLs (http://localhost:* or 127.0.0.1:*).');
+    return;
+  }
   $('#previewFrame').src = url;
   $('#previewExternal').href = url;
 }
@@ -1217,7 +1241,9 @@ function openSession(sid) {
   loadSessions();
   stopActivityPoll();
   if (state.es) state.es.close();
-  const es = new EventSource(`/api/stream?ws=${state.ws}&sid=${sid}&off=0`);
+  const es = new EventSource(
+    `/api/stream?ws=${encodeURIComponent(state.ws)}&sid=${encodeURIComponent(sid)}&off=0`
+  );
   state.es = es;
   es.onmessage = (ev) => {
     try {
@@ -1236,7 +1262,7 @@ function scrollFeed() {
 function bubble(actor, role, cls, html) {
   const left = actor !== 'user';
   return `<div class="turn ${left ? 'left' : 'user'}"><div class="av" style="background:${COLOR[actor] || 'var(--user)'}">${AV[actor] || '?'}</div>
-    <div class="bubble ${cls}"><div class="who" style="color:${COLOR[actor] || 'var(--text)'}">${actor}${role && role !== 'agent' ? `<span class="role">${role}</span>` : ''}</div>${html}</div></div>`;
+    <div class="bubble ${cls}"><div class="who" style="color:${COLOR[actor] || 'var(--text)'}">${esc(actor)}${role && role !== 'agent' ? `<span class="role">${esc(role)}</span>` : ''}</div>${html}</div></div>`;
 }
 function appendHTML(h) {
   feedEl().insertAdjacentHTML('beforeend', h);
