@@ -337,9 +337,9 @@ async function loadConnections() {
       : 'Managed outside this app';
     const controls = c.apiKey
       ? `<div class="connControls" data-provider="${c.id}">
-      <input type="password" autocomplete="off" placeholder="Paste ${esc(c.name)} API key" />
-      <button class="btn primary saveKey" type="button">Save</button>
-      <button class="btn ghost removeKey" type="button" ${status.set ? '' : 'disabled'}>Remove</button>
+      <input type="password" autocomplete="off" placeholder="Paste ${esc(c.name)} API key" title="Paste the ${esc(c.name)} API key stored locally on this machine" />
+      <button class="btn primary saveKey" type="button" title="Save this provider key locally">Save</button>
+      <button class="btn ghost removeKey" type="button" title="Remove this provider key" ${status.set ? '' : 'disabled'}>Remove</button>
     </div>`
       : '';
     return `<div class="connRow">
@@ -478,8 +478,8 @@ function renderHealthRows() {
       const cmd = LOGIN_COMMANDS[p.id];
       const actions =
         p.kind === 'cli'
-          ? `<code>${esc(cmd || '')}</code><button class="btn ghost onboardCopy" type="button" data-copy="${esc(cmd || '')}">Copy</button>`
-          : `<button class="btn ghost onboardConnections" type="button">Open Connections</button>`;
+          ? `<code>${esc(cmd || '')}</code><button class="btn ghost onboardCopy" type="button" data-copy="${esc(cmd || '')}" title="Copy this setup command">Copy</button>`
+          : `<button class="btn ghost onboardConnections" type="button" title="Open provider connection settings">Open Connections</button>`;
       return `<div class="healthRow">
       <div class="healthIcon ${p.ready ? 'ok' : 'bad'}">${p.ready ? '✓' : '✗'}</div>
       <div>
@@ -504,13 +504,13 @@ function renderOnboarding() {
     body = `<div class="onboardStep">Step 2 of 4</div>
       <h4>${titles[1]}</h4>
       <p>Check which providers are ready on this machine. CLI providers need their tools installed and signed in; Gemini needs an API key.</p>
-      <div class="row" style="margin:0 0 10px"><button class="btn ghost" id="onboardingRefresh" type="button">Refresh</button></div>
+      <div class="row" style="margin:0 0 10px"><button class="btn ghost" id="onboardingRefresh" type="button" title="Refresh provider readiness">Refresh</button></div>
       ${renderHealthRows()}`;
   } else if (onboardingStep === 2) {
     body = `<div class="onboardStep">Step 3 of 4</div>
       <h4>${titles[2]}</h4>
       <p>Add the folder you want this app to work in. Choose a trusted project folder, especially before using Edit mode.</p>
-      <button class="btn primary" id="onboardingAddWorkspace" type="button">Add workspace</button>`;
+      <button class="btn primary" id="onboardingAddWorkspace" type="button" title="Choose a local project folder">Add workspace</button>`;
   } else {
     body = `<div class="onboardStep">Step 4 of 4</div>
       <h4>${titles[3]}</h4>
@@ -1099,6 +1099,8 @@ $('#fileFilter').oninput = () => {
       else adv.setAttribute('hidden', '');
       advToggle.setAttribute('aria-expanded', String(show));
       advToggle.classList.toggle('on', show);
+      advToggle.textContent = show ? 'Hide context settings' : 'Context settings';
+      advToggle.title = show ? 'Hide context saver settings' : 'Show context saver settings';
     };
   $('#themeToggle').textContent = currentTheme === 'light' ? '☽' : '☀';
   const slider = $('#fontSizeSlider');
@@ -1382,7 +1384,7 @@ function showRateLimitBanner(actor) {
     banner.className = 'rateBanner';
     inner.insertBefore(banner, inner.firstChild);
   }
-  banner.innerHTML = `<span>⚠ ${esc(actor)} hit a usage/rate limit — switch models or wait.</span><button class="rateBannerDismiss" type="button" aria-label="Dismiss">✕</button>`;
+  banner.innerHTML = `<span>⚠ ${esc(actor)} hit a usage/rate limit — switch models or wait.</span><button class="rateBannerDismiss" type="button" aria-label="Dismiss" title="Dismiss rate-limit warning">✕</button>`;
   banner.querySelector('.rateBannerDismiss').onclick = () => banner.remove();
 }
 
@@ -2083,12 +2085,12 @@ function addMemberRow(member, idx) {
   const sel = member ? `${member.adapter}|${member.model}` : '';
   const row = document.createElement('div');
   row.className = 'teamRow';
-  row.innerHTML = `<select class="memberModel">${modelOptions(member)}</select>
-    <input class="memberRole" placeholder="Role (e.g. reviewer)" value="${esc((member && member.role) || '')}" />
-    <select class="memberSkill">${skillOptions(member && member.skillId)}</select>
-    <select class="memberEffort">${effortOptions(member && member.effort)}</select>
+  row.innerHTML = `<select class="memberModel" title="Choose provider and model for this member">${modelOptions(member)}</select>
+    <input class="memberRole" placeholder="Role (e.g. reviewer)" value="${esc((member && member.role) || '')}" title="Describe what this member is responsible for" />
+    <select class="memberSkill" title="Choose the reusable skill prompt for this member">${skillOptions(member && member.skillId)}</select>
+    <select class="memberEffort" title="Choose reasoning effort for this member">${effortOptions(member && member.effort)}</select>
     <label class="leadOnly" title="Team lead"><input type="radio" name="teamLead" value="${idx}" ${idx === editingTeam.leadIndex ? 'checked' : ''} aria-label="Team lead" /></label>
-    <button class="btn ghost rm" type="button" aria-label="Remove member">✕</button>`;
+    <button class="btn ghost rm" type="button" aria-label="Remove member" title="Remove this team member">✕</button>`;
   if (sel) row.querySelector('.memberModel').value = sel;
   row.querySelector('.memberModel').onchange = () => updateMemberHint(row);
   updateMemberHint(row);
@@ -2204,7 +2206,7 @@ function showPlan(steps) {
     </div>`
       )
       .join('') +
-    `<div class="planActions"><button class="btn ghost" id="planCancel">Cancel</button><button class="btn primary" id="planApprove">Approve</button></div>`;
+    `<div class="planActions"><button class="btn ghost" id="planCancel" title="Cancel team delegation">Cancel</button><button class="btn primary" id="planApprove" title="Approve and run these delegated tasks">Approve</button></div>`;
   $('#planBox').classList.add('show');
   $('#planCancel').onclick = hidePlan;
   $('#planApprove').onclick = approvePlan;
