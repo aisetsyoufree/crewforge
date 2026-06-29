@@ -25,6 +25,9 @@ const RIGHT_WIDTH_KEY = 'crewforge.rightWidth';
 const BOTTOM_H_KEY = 'crewforge.bottomH';
 const RIGHT_TAB_KEY = 'crewforge.rightTab';
 const CONTEXT_MODE_KEY = 'crewforge.contextMode';
+const CONTEXT_PROVIDER_KEY = 'crewforge.contextProvider';
+const THEME_KEY = 'crewforge.theme';
+const FONT_SIZE_KEY = 'crewforge.fontSize';
 const LEFT_WIDTH_MIN = 200;
 const LEFT_WIDTH_MAX = 520;
 const RIGHT_WIDTH_MIN = 260;
@@ -36,7 +39,31 @@ let sessionSort = localStorage.getItem(SESSION_SORT_KEY) || 'newest';
 if (sessionSort !== 'newest' && sessionSort !== 'oldest') sessionSort = 'newest';
 let contextMode = localStorage.getItem(CONTEXT_MODE_KEY) || 'balanced';
 if (!['off', 'balanced', 'maximum'].includes(contextMode)) contextMode = 'balanced';
+let contextProvider = localStorage.getItem(CONTEXT_PROVIDER_KEY) || 'headroom';
+if (!['builtin', 'headroom'].includes(contextProvider)) contextProvider = 'headroom';
 let contextSaverInfo = null;
+
+// ── theme ──────────────────────────────────────────────────
+let currentTheme = localStorage.getItem(THEME_KEY) || 'dark';
+function applyTheme(theme) {
+  currentTheme = theme;
+  document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : '');
+  const btn = $('#themeToggle');
+  if (btn) btn.textContent = theme === 'light' ? '☽' : '☀';
+  localStorage.setItem(THEME_KEY, theme);
+}
+function toggleTheme() { applyTheme(currentTheme === 'light' ? 'dark' : 'light'); }
+applyTheme(currentTheme);
+
+// ── font size ──────────────────────────────────────────────
+let currentFontSize = Number(localStorage.getItem(FONT_SIZE_KEY)) || 14;
+if (currentFontSize < 12 || currentFontSize > 18) currentFontSize = 14;
+function applyFontSize(size) {
+  currentFontSize = size;
+  document.documentElement.style.setProperty('--ui-font-size', size + 'px');
+  localStorage.setItem(FONT_SIZE_KEY, size);
+}
+applyFontSize(currentFontSize);
 const NOT_REPO_MSG = 'Not a git repository — file activity & diff/review need a git repo';
 const COLOR = {
   claude: 'var(--claude)',
@@ -230,15 +257,45 @@ async function api(p, opt) {
   }
   return r.json();
 }
+let _elapsedTimer = null;
+function startElapsedTick() {
+  if (_elapsedTimer) return;
+  _elapsedTimer = setInterval(() => {
+    document.querySelectorAll('.runningStatus').forEach((el) => {
+      const start = Number(el.dataset.start);
+      if (!start) return;
+      const secs = Math.floor((Date.now() - start) / 1000);
+      const span = el.querySelector('.elapsed');
+      if (span)
+        span.textContent = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+    });
+  }, 1000);
+}
+function stopElapsedTick() {
+  if (_elapsedTimer) {
+    clearInterval(_elapsedTimer);
+    _elapsedTimer = null;
+  }
+}
+function fmtNum(n) {
+  if (n == null || n === '') return '?';
+  const v = Number(n);
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v);
+}
 function setRunActive(active) {
   state.activeRun = !!active;
   updateRunControls();
+  if (active) startElapsedTick();
+  else stopElapsedTick();
 }
 function updateRunControls() {
   const active = state.activeRun;
   $('#send').disabled = active;
   $('#stop').style.display = active ? 'inline-block' : 'none';
   $('#stop').disabled = false;
+  const topStop = $('#topStop');
+  if (topStop) { topStop.style.display = active ? 'inline-flex' : 'none'; topStop.disabled = false; }
+  $('#splitCaret').disabled = active;
   $('#delegate').disabled = active;
   $('#reviewBtn').disabled = active || activity.notRepo;
   $('#reviewGo').disabled = active || activity.notRepo;
@@ -292,45 +349,33 @@ function renderContextSaverStatus(saver) {
     $('#contextSaverStatus').innerHTML = '';
     return;
   }
-  const headroomState = saver.headroomActive
-    ? 'Headroom active'
+  const hrState = saver.headroomActive ? 'Active' : saver.headroomInstalled ? 'Installed — needs proxy/API key' : 'Not installed (optional)';
+  const hrClass = saver.headroomActive ? 'set' : saver.headroomInstalled ? 'warn' : '';
+  const setupRows = saver.headroomActive
+    ? ''
     : saver.headroomInstalled
-      ? 'Headroom installed, needs proxy/API key'
-      : 'Using built-in saver';
-  const stateClass = saver.headroomActive ? 'set' : saver.headroomInstalled ? 'warn' : '';
+      ? `<span>Configure</span><code>HEADROOM_BASE_URL=http://localhost:8787</code>`
+      : `<span>Install</span><code>npm install headroom-ai</code><span>Proxy</span><code>headroom proxy --port 8787</code>`;
   $('#contextSaverStatus').innerHTML = `<div class="contextSaverTitle">Context Saver</div>
     <div class="contextSaverGrid">
-      <span>Current behavior</span><strong class="${stateClass}">${esc(headroomState)}</strong>
-      <span>Composer setting</span><strong>${esc(contextMode)}</strong>
-      <span>Optional install</span><code>npm install headroom-ai</code>
-      <span>Optional proxy</span><code>headroom proxy</code>
+      <span>Provider</span><strong>${esc(contextProvider)}</strong>
+      <span>Mode</span><strong>${esc(contextMode)}</strong>
+      <span>Headroom</span><strong class="${hrClass}">${esc(hrState)}</strong>
+      ${setupRows}
     </div>`;
 }
-function updateContextSaverBadge() {
-  const badge = $('#contextSaverBadge');
-  if (!badge) return;
-  badge.classList.remove('set', 'warn');
-  if (contextMode === 'off') {
-    badge.textContent = 'off';
-    badge.title = 'Context Saver is off';
-    return;
+function updateContextSaverUI() {
+  const provSel = $('#contextProvider');
+  if (!provSel) return;
+  const hrOpt = provSel.querySelector('option[value="headroom"]');
+  if (!hrOpt) return;
+  if (contextSaverInfo && !contextSaverInfo.headroomActive) {
+    hrOpt.textContent = contextSaverInfo.headroomInstalled ? 'Headroom (needs config)' : 'Headroom (not installed)';
+  } else if (contextSaverInfo && contextSaverInfo.headroomActive) {
+    hrOpt.textContent = 'Headroom ✓';
+  } else {
+    hrOpt.textContent = 'Headroom';
   }
-  if (!contextSaverInfo) {
-    badge.textContent = 'checking';
-    badge.title = 'Checking Context Saver status';
-    return;
-  }
-  if (contextSaverInfo.headroomActive) {
-    badge.textContent = 'Headroom';
-    badge.classList.add('set');
-    badge.title = 'Headroom is active';
-    return;
-  }
-  badge.textContent = 'built-in';
-  badge.classList.add(contextSaverInfo.headroomInstalled ? 'warn' : '');
-  badge.title = contextSaverInfo.headroomInstalled
-    ? 'Headroom is installed but not configured. Open details.'
-    : 'Using built-in saver. Open details for Headroom setup.';
 }
 async function refreshContextSaverInfo() {
   try {
@@ -338,32 +383,7 @@ async function refreshContextSaverInfo() {
   } catch {
     contextSaverInfo = null;
   }
-  updateContextSaverBadge();
-}
-function contextSaverStateText() {
-  if (!contextSaverInfo) return 'Checking current status.';
-  if (contextMode === 'off') return 'Context Saver is off for new runs.';
-  if (contextSaverInfo.headroomActive) return 'Headroom is active for new runs.';
-  if (contextSaverInfo.headroomInstalled)
-    return 'Crew Forge is using the built-in saver. Headroom is installed but not configured.';
-  return 'Crew Forge is using the built-in saver. Headroom is not installed or configured.';
-}
-function openContextSaverInfo() {
-  const headroomActive = contextSaverInfo && contextSaverInfo.headroomActive;
-  $('#contextSaverInfoBody').innerHTML = `<h4>${esc(contextSaverStateText())}</h4>
-    <p><strong>Built-in saver</strong> ships with Crew Forge. It keeps recent turns, summarizes older turns, preserves touched-file hints, and caps context before each model call.</p>
-    <p><strong>Headroom</strong> is optional. Crew Forge can use it only when the optional package and proxy/API are configured for this app.</p>
-    <ul>
-      <li>Install optional package here: <code>npm install headroom-ai</code></li>
-      <li>Start the proxy separately: <code>headroom proxy</code></li>
-      <li>Set <code>HEADROOM_BASE_URL</code> or <code>HEADROOM_API_KEY</code>, then restart Crew Forge.</li>
-    </ul>
-    <p>Installing Headroom for Crew Forge does not automatically install or wrap Claude Code, Codex, or Grok outside this app. Use Headroom Desktop or Headroom wrapper setup if you want those tools covered globally.</p>
-    <p>${headroomActive ? 'The badge will show Headroom while that path is active.' : 'Until then, the badge shows built-in and Crew Forge uses its local saver.'}</p>`;
-  $('#contextSaverModal').classList.add('show');
-}
-function closeContextSaverInfo() {
-  $('#contextSaverModal').classList.remove('show');
+  updateContextSaverUI();
 }
 function openConnections() {
   $('#connectionsModal').classList.add('show');
@@ -1014,21 +1034,32 @@ $('#fileFilter').oninput = () => {
     populateReviewModels();
   };
   $('#model').onchange = updateCaps;
+  $('#contextProvider').value = contextProvider;
+  $('#contextProvider').onchange = () => {
+    contextProvider = $('#contextProvider').value;
+    localStorage.setItem(CONTEXT_PROVIDER_KEY, contextProvider);
+    if (contextProvider === 'headroom' && contextSaverInfo && !contextSaverInfo.headroomActive) {
+      notify(
+        contextSaverInfo.headroomInstalled
+          ? 'Headroom is installed but needs configuration. Open Connections for details.'
+          : 'Headroom is not installed. Open Connections for setup steps.',
+        'warn'
+      );
+    }
+  };
   $('#contextMode').value = contextMode;
   $('#contextMode').onchange = () => {
     contextMode = $('#contextMode').value;
     localStorage.setItem(CONTEXT_MODE_KEY, contextMode);
-    updateContextSaverBadge();
-    if (contextMode !== 'off' && contextSaverInfo && !contextSaverInfo.headroomActive) {
-      notify('Using built-in Context Saver. Open Connections for Headroom install steps.', 'warn');
-    }
   };
-  $('#contextSaverBadge').onclick = openContextSaverInfo;
-  $('#contextSaverClose').onclick = closeContextSaverInfo;
-  $('#contextSaverOpenConnections').onclick = () => {
-    closeContextSaverInfo();
-    openConnections();
-  };
+  $('#topStop').onclick = stopRun;
+  $('#themeToggle').onclick = toggleTheme;
+  $('#themeToggle').textContent = currentTheme === 'light' ? '☽' : '☀';
+  const slider = $('#fontSizeSlider');
+  if (slider) {
+    slider.value = currentFontSize;
+    slider.oninput = () => applyFontSize(Number(slider.value));
+  }
   populateComposerModels();
   updateCaps();
   populateReviewModels();
@@ -1261,19 +1292,53 @@ function render(e) {
       appendHTML(bubble('team', '', '', `<div class="body">${esc(body || text)}</div>`));
       return;
     }
+    // context-saver token savings chip
+    if (type === 'usage' && actor === 'context') {
+      const saved = meta && meta.tokensSaved;
+      const prov = meta && meta.provider;
+      if (saved > 0) {
+        appendHTML(
+          `<div class="chip saverChip">💾 ${esc(prov || 'context')} saved ~${fmtNum(saved)} tokens</div>`
+        );
+      }
+      return;
+    }
     const running = meta && meta.running;
     if (running) {
       setRunActive(true);
       startActivityPoll();
     }
-    appendHTML(
-      `<div class="status">${running ? '<span class="dot"></span>' : '—'} ${esc(text)} ${meta && meta.done ? '✓' : ''}</div>`
-    );
     if (meta && meta.done) {
+      // Finalize any running chips for this actor
+      document.querySelectorAll(`.runningStatus[data-actor="${actor}"]`).forEach((el) => {
+        el.classList.remove('runningStatus');
+        const dot = el.querySelector('.dot');
+        if (dot) dot.remove();
+        const elapsed = el.querySelector('.elapsed');
+        if (elapsed) elapsed.remove();
+      });
+      const failed = !!(meta && meta.failed);
+      const elapsedStr = (meta && meta.elapsedStr) || '';
+      const usage = meta && meta.usage;
+      const statParts = [];
+      if (elapsedStr) statParts.push(esc(elapsedStr));
+      if (usage && usage.input_tokens != null)
+        statParts.push(`↗ ${fmtNum(usage.input_tokens)} in / ${fmtNum(usage.output_tokens || 0)} out`);
+      const statsHtml = statParts.length
+        ? ` <span class="stepStats">${statParts.join(' · ')}</span>`
+        : '';
+      appendHTML(
+        `<div class="status${failed ? ' stepFailed' : ''}">— ${esc(text)} ${failed ? '✗' : '✓'}${statsHtml}</div>`
+      );
       finalizeActor(actor);
       setRunActive(false);
       stopActivityPoll();
       loadChanges();
+    } else {
+      const startTs = (meta && meta.startedAt) || Date.now();
+      appendHTML(
+        `<div class="status runningStatus" data-actor="${esc(actor)}" data-start="${startTs}"><span class="dot"></span> ${esc(text)} <span class="elapsed"></span></div>`
+      );
     }
     return;
   }
@@ -1325,7 +1390,11 @@ function render(e) {
     return;
   }
   if (type === 'usage') {
-    appendHTML(`<div class="chip">${esc(text)}</div>`);
+    const inp = meta && (meta.input_tokens || meta.inputTokens);
+    const out = meta && (meta.output_tokens || meta.outputTokens);
+    const usageTxt =
+      inp != null ? `↗ ${fmtNum(inp)} in / ${fmtNum(out || 0)} out` : esc(text);
+    appendHTML(`<div class="chip usageChip">${usageTxt}</div>`);
     return;
   }
   if (type === 'rate_limit') {
@@ -1377,6 +1446,7 @@ async function send() {
         mode: state.mode,
         prompt,
         contextMode,
+        contextProvider,
       }),
     });
     if (r.error) {
@@ -1401,6 +1471,8 @@ $('#prompt').addEventListener('keydown', (e) => {
 async function stopRun() {
   if (!state.ws || !state.sid || !state.activeRun) return;
   $('#stop').disabled = true;
+  const topStop = $('#topStop');
+  if (topStop) topStop.disabled = true;
   try {
     const r = await api('/api/stop', {
       method: 'POST',
@@ -1409,6 +1481,7 @@ async function stopRun() {
     });
     if (r.error) {
       $('#stop').disabled = false;
+      if (topStop) topStop.disabled = false;
       return notify(r.error);
     }
     setRunActive(false);
@@ -1416,6 +1489,7 @@ async function stopRun() {
     loadChanges();
   } catch (_e) {
     $('#stop').disabled = false;
+    if (topStop) topStop.disabled = false;
     notify('Unable to stop run.');
   }
 }
@@ -1635,7 +1709,7 @@ async function startReview() {
     const r = await api('/api/review', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ws: state.ws, sid: state.sid, reviewer, reviewerModel, contextMode }),
+      body: JSON.stringify({ ws: state.ws, sid: state.sid, reviewer, reviewerModel, contextMode, contextProvider }),
     });
     if (r.error) {
       setRunActive(false);
@@ -1857,6 +1931,12 @@ function updateMemberHint(row) {
     hint.textContent = 'This provider cannot edit files — steps run as analysis only.';
   } else if (hint) hint.remove();
 }
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'];
+function effortOptions(current) {
+  return EFFORT_LEVELS.map(
+    (e) => `<option value="${e}"${e === (current || 'medium') ? ' selected' : ''}>${e.charAt(0).toUpperCase() + e.slice(1)}</option>`
+  ).join('');
+}
 function addMemberRow(member, idx) {
   const sel = member ? `${member.adapter}|${member.model}` : '';
   const row = document.createElement('div');
@@ -1864,6 +1944,7 @@ function addMemberRow(member, idx) {
   row.innerHTML = `<select class="memberModel">${modelOptions(member)}</select>
     <input class="memberRole" placeholder="Role (e.g. reviewer)" value="${esc((member && member.role) || '')}" />
     <select class="memberSkill">${skillOptions(member && member.skillId)}</select>
+    <select class="memberEffort">${effortOptions(member && member.effort)}</select>
     <label class="leadOnly" title="Team lead"><input type="radio" name="teamLead" value="${idx}" ${idx === editingTeam.leadIndex ? 'checked' : ''} aria-label="Team lead" /></label>
     <button class="btn ghost rm" type="button" aria-label="Remove member">✕</button>`;
   if (sel) row.querySelector('.memberModel').value = sel;
@@ -1916,6 +1997,7 @@ function collectTeamFromModal() {
         model,
         role: row.querySelector('.memberRole').value.trim(),
         skillId: row.querySelector('.memberSkill').value || undefined,
+        effort: row.querySelector('.memberEffort').value || 'medium',
       };
     })
     .filter((m) => m.adapter);
@@ -1957,7 +2039,8 @@ function activeTeam() {
 }
 function updateDelegateButton() {
   const on = !!activeTeam();
-  $('#delegate').style.display = on ? 'inline-block' : 'none';
+  $('#splitCaret').style.display = on ? 'inline-flex' : 'none';
+  $('#splitCaret').disabled = state.activeRun;
   $('#delegate').disabled = state.activeRun;
   if (!on) hidePlan();
 }
@@ -1997,13 +2080,13 @@ async function delegateToTeam() {
   const prompt = $('#prompt').value.trim();
   if (!prompt) return;
   await ensureSession();
-  $('#delegate').disabled = true;
+  $('#splitCaret').disabled = true;
   setRunActive(true);
   try {
     const r = await api('/api/plan', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ws: state.ws, sid: state.sid, teamId: team.id, prompt, contextMode }),
+      body: JSON.stringify({ ws: state.ws, sid: state.sid, teamId: team.id, prompt, contextMode, contextProvider }),
     });
     if (r.cancelled) {
       setRunActive(false);
@@ -2020,7 +2103,7 @@ async function delegateToTeam() {
     setRunActive(false);
     notify('Unable to create team plan.');
   } finally {
-    $('#delegate').disabled = state.activeRun;
+    $('#splitCaret').disabled = state.activeRun;
   }
 }
 async function approvePlan() {
@@ -2044,6 +2127,7 @@ async function approvePlan() {
         teamId: planDraft.teamId,
         steps,
         contextMode,
+        contextProvider,
       }),
     });
     if (r.error) {
@@ -2060,7 +2144,15 @@ async function approvePlan() {
     if (!e.sessionExpired) notify('Unable to approve team plan.');
   }
 }
-$('#delegate').onclick = delegateToTeam;
+$('#delegate').onclick = () => { closeSplitDropdown(); delegateToTeam(); };
+$('#sendDirect').onclick = () => { closeSplitDropdown(); send(); };
+$('#splitCaret').onclick = (e) => {
+  e.stopPropagation();
+  const dd = $('#splitDropdown');
+  dd.hidden = !dd.hidden;
+};
+function closeSplitDropdown() { $('#splitDropdown').hidden = true; }
+document.addEventListener('click', () => closeSplitDropdown());
 $('#teamPick').onchange = () => setActiveTeam($('#teamPick').value);
 $('#newTeam').onclick = () => openTeamModal(null);
 $('#editTeam').onclick = () => {

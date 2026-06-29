@@ -17,6 +17,29 @@
   --leftw: 280px;
   --rightw: 340px;
   --bottomh: 180px;
+  --bg-gradient: #161b27;
+  --ui-font-size: 14px;
+  /* custom dropdown arrow for dark mode */
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238b94a7' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+[data-theme="light"] {
+  --bg: #f2f4f8;
+  --panel: #ffffff;
+  --panel2: #eaecf2;
+  --line: #d8dce8;
+  --text: #1a1d26;
+  --muted: #64748b;
+  --bg-gradient: #dce4f5;
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2364748b' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: #c4cad8;
+  border: 2px solid var(--panel);
+}
+[data-theme="light"] .rateBanner {
+  background: #fff8e1;
+  border-color: #e5a800;
+  color: #a36200;
 }
 * {
   box-sizing: border-box;
@@ -27,10 +50,12 @@ body {
   margin: 0;
 }
 body {
-  background: radial-gradient(1100px 560px at 82% -12%, #161b27, var(--bg) 55%);
+  background: radial-gradient(1100px 560px at 82% -12%, var(--bg-gradient), var(--bg) 55%);
   color: var(--text);
-  font:
-    14px/1.55 -apple-system,
+  font-size: var(--ui-font-size);
+  line-height: 1.55;
+  font-family:
+    -apple-system,
     BlinkMacSystemFont,
     'Segoe UI',
     Inter,
@@ -65,24 +90,66 @@ body {
   opacity: 0.4;
 }
 .brand {
-  padding: 16px 16px 12px;
+  padding: 12px 14px 10px;
   border-bottom: 1px solid var(--line);
 }
 .brandTop {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 .brand h1 {
   margin: 0;
   font-size: 14px;
   font-weight: 650;
   letter-spacing: 0.2px;
+  flex: 1;
+}
+.brandControls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+}
+.fontSizerA {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  line-height: 1;
+  flex: 0 0 auto;
+  user-select: none;
+}
+.fontSizerALg {
+  font-size: 15px;
+}
+#fontSizeSlider {
+  flex: 1;
+  height: 3px;
+  -webkit-appearance: none;
+  appearance: none;
+  accent-color: var(--claude);
+  background: var(--line);
+  border-radius: 3px;
+  border: 0;
+  padding: 0;
+  width: auto;
+  min-width: 0;
+  cursor: pointer;
+}
+#fontSizeSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--claude);
+  cursor: pointer;
+  border: 2px solid var(--panel);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 .brand .dots {
   display: flex;
   gap: 5px;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 .brand .dots i {
   width: 9px;
@@ -683,35 +750,93 @@ main {
   background: var(--claude);
   color: #fff;
 }
-.contextSaver {
+/* ── uniform composer controls ────────────────────────────── */
+/* All interactive elements in .ctrls share the same height   */
+.ctrlSel {
+  -webkit-appearance: none;
+  appearance: none;
+  width: auto;
+  height: 32px;
+  padding: 0 26px 0 10px;
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 0;
+  background-color: var(--panel2);
+  background-image: var(--select-arrow);
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
+}
+.ctrlSel:focus {
+  outline: none;
+  border-color: var(--claude);
+}
+/* provider/model dropdowns sized for their content */
+#provider.ctrlSel { min-width: 90px; }
+#model.ctrlSel    { min-width: 120px; }
+/* context selects are narrower */
+#contextProvider.ctrlSel { min-width: 88px; }
+#contextMode.ctrlSel     { min-width: 100px; }
+
+.ctrlGroup {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 11px;
-  min-width: 0;
-}
-.contextSaver select.model {
-  min-width: 118px;
-}
-.contextSaverBadge {
+  gap: 5px;
   border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 8px 0 10px;
+  height: 32px;
   background: var(--panel2);
+}
+.ctrlLabel {
+  font-size: 11px;
+  font-weight: 600;
   color: var(--muted);
-  border-radius: 999px;
-  padding: 3px 7px;
-  font-size: 10px;
-  cursor: pointer;
   white-space: nowrap;
+  flex: 0 0 auto;
 }
-.contextSaverBadge.set {
-  color: var(--ok);
-  border-color: rgba(46, 204, 113, 0.35);
+/* selects inside the grouped control lose their own border/bg */
+.ctrlGroup .ctrlSel {
+  border: 0;
+  background: transparent;
+  background-image: var(--select-arrow);
+  background-repeat: no-repeat;
+  background-position: right 2px center;
+  padding-left: 4px;
+  padding-right: 18px;
+  height: 100%;
+  border-radius: 0;
+  font-size: 12px;
 }
-.contextSaverBadge.warn {
-  color: var(--warn);
-  border-color: rgba(245, 179, 85, 0.35);
+.ctrlGroup .ctrlSel:focus {
+  outline: none;
+  border: 0;
 }
+/* divider between the two context selects */
+.ctrlGroup .ctrlSel + .ctrlSel {
+  border-left: 1px solid var(--line);
+  padding-left: 8px;
+  margin-left: 3px;
+}
+
+.seg {
+  height: 32px;
+}
+.seg button {
+  padding: 0 12px;
+  height: 100%;
+  font-size: 12.5px;
+}
+
+.capsMuted {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* sidebar selects keep their original full-width style */
 select.model {
   width: auto;
   min-width: 150px;
@@ -1052,7 +1177,7 @@ select.model {
 .teamGridHead,
 .teamRow {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) 44px 40px;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(72px, 0.55fr) 44px 40px;
   gap: 8px;
   align-items: center;
 }
@@ -1063,8 +1188,8 @@ select.model {
   margin-bottom: 6px;
   text-transform: uppercase;
 }
-.teamGridHead span:nth-child(4),
-.teamGridHead span:nth-child(5) {
+.teamGridHead span:nth-child(5),
+.teamGridHead span:nth-child(6) {
   text-align: center;
 }
 .teamRow {
@@ -1613,4 +1738,100 @@ select.model {
   width: 100%;
   border: 0;
   background: #fff;
+}
+
+/* Observability: top-bar stop, elapsed timer, step stats */
+.topStop {
+  font-size: 12px;
+  padding: 4px 12px;
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+}
+.topStop:hover {
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+}
+.elapsed {
+  color: var(--muted);
+  font-size: 11px;
+  opacity: 0.8;
+  min-width: 30px;
+}
+.stepStats {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.75;
+}
+.stepFailed {
+  color: var(--bad);
+}
+.stepFailed .stepStats {
+  color: var(--bad);
+  opacity: 0.7;
+}
+.usageChip {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.saverChip {
+  color: #5a9;
+  border-color: #2a4a3a;
+  font-size: 10px;
+}
+[data-theme="light"] .saverChip {
+  color: #2a7a5a;
+  border-color: #b0d8c8;
+}
+
+/* Split send button */
+.splitBtn {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+.splitMain {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.splitCaret {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid color-mix(in srgb, #fff 30%, var(--claude));
+  padding: 0 11px;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0;
+}
+.splitDropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+  min-width: 170px;
+  box-shadow: 0 4px 18px rgba(0,0,0,.35);
+  z-index: 200;
+}
+.splitDropdown[hidden] { display: none; }
+.splitOpt {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.splitOpt:hover {
+  background: var(--panel2);
+}
+.splitOpt:last-child {
+  border-top: 1px solid var(--line);
 }

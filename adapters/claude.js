@@ -16,7 +16,7 @@ module.exports = {
   defaultModel: 'sonnet',
   models: ['sonnet', 'opus', 'haiku'],
 
-  run({ prompt, model, cwd, mode, signal }, onEvent) {
+  run({ prompt, model, effort, cwd, mode, signal }, onEvent) {
     if (signal && signal.aborted)
       return Promise.resolve({ finalText: '', usage: null, cancelled: true });
     return new Promise((resolve) => {
@@ -30,6 +30,7 @@ module.exports = {
         mode === 'edit' ? 'acceptEdits' : 'plan',
       ];
       if (model) args.push('--model', model);
+      if (effort) args.push('--effort', effort);
 
       const child = spawn('claude', args, {
         stdio: ['ignore', 'pipe', 'pipe'],

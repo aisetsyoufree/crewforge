@@ -8,24 +8,14 @@
   <div class="brand">
     <div class="brandTop">
       <h1>Crew Forge</h1>
-      <button
-        class="iconBtn"
-        id="onboardingBtn"
-        type="button"
-        title="Get started"
-        aria-label="Get started"
-      >
-        ?
-      </button>
-      <button
-        class="iconBtn"
-        id="connectionsBtn"
-        type="button"
-        title="Connections"
-        aria-label="Connections"
-      >
-        ⚙
-      </button>
+      <button class="iconBtn" id="onboardingBtn" type="button" title="Get started" aria-label="Get started">?</button>
+      <button class="iconBtn" id="connectionsBtn" type="button" title="Connections" aria-label="Connections">⚙</button>
+      <button class="iconBtn" id="themeToggle" type="button" title="Toggle light/dark mode" aria-label="Toggle theme">☀</button>
+    </div>
+    <div class="brandControls">
+      <span class="fontSizerA">A</span>
+      <input type="range" id="fontSizeSlider" min="12" max="18" step="1" value="14" aria-label="Font size">
+      <span class="fontSizerA fontSizerALg">A</span>
     </div>
     <div class="dots">
       <i style="background: var(--claude)"></i><i style="background: var(--codex)"></i
@@ -76,6 +66,7 @@
       <div class="ws" id="wsName">No workspace</div>
       <div class="path" id="wsPath">pick or add a folder to begin</div>
     </div>
+    <button class="btn ghost topStop" id="topStop" type="button" style="display:none">■ Stop</button>
     <div class="legend">
       <span><i style="background: var(--claude)"></i>Claude</span>
       <span><i style="background: var(--codex)"></i>Codex</span>
@@ -93,29 +84,25 @@
   <div class="composer">
     <div class="rowResizeHandle" id="composerResize" title="Drag to resize"></div>
     <div class="ctrls">
-      <select class="model" id="provider"></select>
-      <select class="model" id="model"></select>
+      <select class="ctrlSel" id="provider"></select>
+      <select class="ctrlSel" id="model"></select>
       <div class="seg" id="mode">
         <button data-m="plan" class="on">Plan (read-only)</button>
         <button data-m="edit">Edit (can change files)</button>
       </div>
-      <label class="contextSaver">
-        <span>Context Saver</span>
-        <select class="model" id="contextMode" title="Compress older context before each run">
+      <div class="ctrlGroup">
+        <span class="ctrlLabel">Context</span>
+        <select class="ctrlSel" id="contextProvider" title="Context compression provider">
+          <option value="builtin">Built-in</option>
+          <option value="headroom">Headroom</option>
+        </select>
+        <select class="ctrlSel" id="contextMode" title="Compression aggressiveness">
           <option value="off">Off</option>
           <option value="balanced">Balanced</option>
           <option value="maximum">Maximum</option>
         </select>
-        <button
-          class="contextSaverBadge"
-          id="contextSaverBadge"
-          type="button"
-          title="Context Saver details"
-        >
-          checking
-        </button>
-      </label>
-      <span id="caps" style="font-size: 11px; color: var(--muted)"></span>
+      </div>
+      <span id="caps" class="capsMuted"></span>
     </div>
     <textarea
       id="prompt"
@@ -123,11 +110,17 @@
     ></textarea>
     <div id="planBox" class="planBox"></div>
     <div class="send">
-      <button class="btn ghost" id="delegate" style="display: none">Delegate to team</button>
       <button class="btn ghost" id="stop" type="button" style="display: none; color: var(--bad)">
         Stop
       </button>
-      <button class="btn primary" id="send" style="margin-left: auto">Send ▶</button>
+      <div class="splitBtn" id="splitBtn" style="margin-left: auto">
+        <button class="btn primary splitMain" id="send" type="button">Send ▶</button>
+        <button class="btn primary splitCaret" id="splitCaret" type="button" aria-label="More send options" style="display:none">&#8964;</button>
+        <div class="splitDropdown" id="splitDropdown" hidden>
+          <button class="splitOpt" id="sendDirect" type="button">Send to model</button>
+          <button class="splitOpt" id="delegate" type="button">Delegate to team</button>
+        </div>
+      </div>
     </div>
   </div>
 </main>
@@ -398,6 +391,7 @@
         <span>Member</span>
         <span>Role</span>
         <span>Skill</span>
+        <span>Effort</span>
         <span>Lead</span>
         <span></span>
       </div>
@@ -467,16 +461,6 @@
   </div>
 </div>
 
-<div class="modal" id="contextSaverModal">
-  <div class="card contextInfoCard">
-    <h3>Context Saver</h3>
-    <div class="contextInfoBody" id="contextSaverInfoBody"></div>
-    <div class="foot">
-      <button class="btn ghost" id="contextSaverOpenConnections">Connections</button>
-      <button class="btn primary" id="contextSaverClose">Done</button>
-    </div>
-  </div>
-</div>
 
 <div class="toastStack" id="toastStack" aria-live="polite"></div>
 

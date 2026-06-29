@@ -49,6 +49,26 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { execFile, spawn } = require('child_process');
+
+// Load .env if present — only sets vars not already in the environment.
+// No external deps; reads KEY=VALUE lines, skips comments and blanks.
+(function loadDotEnv() {
+  const envFile = path.join(__dirname, '.env');
+  try {
+    const lines = fs.readFileSync(envFile, 'utf8').split('\n');
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const eq = line.indexOf('=');
+      if (eq < 1) continue;
+      const key = line.slice(0, eq).trim();
+      const val = line.slice(eq + 1).trim().replace(/^(['"])(.*)\1$/, '$2');
+      if (key && !(key in process.env)) process.env[key] = val;
+    }
+  } catch {
+    // .env is optional; silently ignore if missing.
+  }
+})();
 const adapters = require('./adapters');
 const store = require('./lib/store');
 const watcher = require('./lib/watcher');
@@ -363,6 +383,7 @@ async function buildContext(wsId, sid, newPrompt, options = {}) {
   const result = await contextSaver.buildSavedContext(store.readEvents(wsId, sid), newPrompt, {
     mode,
     model: options.model,
+    provider: options.provider,
   });
   if (result.provider && result.tokensSaved > 0) {
     store.append(wsId, sid, {
@@ -726,7 +747,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/review') {
       const data = await body(req, res);
       if (!data) return;
-      const { ws, sid, reviewer, reviewerModel, contextMode } = data;
+      const { ws, sid, reviewer, reviewerModel, contextMode, contextProvider } = data;
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
@@ -748,6 +769,7 @@ const server = http.createServer(async (req, res) => {
       const prompt = buildReviewPrompt(diff);
       const fullPrompt = await buildContext(ws, sid, prompt, {
         contextMode,
+        provider: contextProvider,
         model: reviewerModel,
       });
       const run = startRun(ws, sid);
@@ -879,7 +901,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/plan') {
       const data = await body(req, res);
       if (!data) return;
-      const { ws, sid, teamId, prompt, contextMode } = data;
+      const { ws, sid, teamId, prompt, contextMode, contextProvider } = data;
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
@@ -909,7 +931,7 @@ const server = http.createServer(async (req, res) => {
           adapters,
           buildContext,
           store,
-          team: { ...team, contextMode },
+          team: { ...team, contextMode, contextProvider },
           prompt,
           ws,
           sid,
@@ -926,7 +948,7 @@ const server = http.createServer(async (req, res) => {
           actor: 'team',
           type: 'status',
           text: 'Team delegation planning failed',
-          meta: { done: true },
+          meta: { done: true, failed: true },
         });
         return json(res, 500, { error: e.message });
       } finally {
@@ -937,7 +959,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/approve') {
       const data = await body(req, res);
       if (!data) return;
-      const { ws, sid, teamId, steps, contextMode } = data;
+      const { ws, sid, teamId, steps, contextMode, contextProvider } = data;
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
@@ -963,7 +985,7 @@ const server = http.createServer(async (req, res) => {
           adapters,
           buildContext,
           store,
-          team: { ...team, contextMode },
+          team: { ...team, contextMode, contextProvider },
           steps,
           ws,
           sid,
@@ -986,7 +1008,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/run') {
       const data = await body(req, res);
       if (!data) return;
-      const { ws, sid, adapter, model, mode, prompt, role, contextMode } = data;
+      const { ws, sid, adapter, model, mode, prompt, role, contextMode, contextProvider } = data;
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
@@ -1011,7 +1033,7 @@ const server = http.createServer(async (req, res) => {
         meta: { running: true },
       });
 
-      const fullPrompt = await buildContext(ws, sid, prompt, { contextMode, model });
+      const fullPrompt = await buildContext(ws, sid, prompt, { contextMode, provider: contextProvider, model });
       adapters
         .run(
           adapter,
