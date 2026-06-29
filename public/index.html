@@ -385,9 +385,21 @@
           "
           >Members</label
         >
-        <button class="btn ghost" id="addMember" style="padding: 5px 9px; font-size: 11px">
-          + Add seat
-        </button>
+        <div class="teamMemberTools">
+          <button class="btn ghost" id="editSkills" style="padding: 5px 9px; font-size: 11px">
+            Edit skills
+          </button>
+          <button class="btn ghost" id="addMember" style="padding: 5px 9px; font-size: 11px">
+            + Add seat
+          </button>
+        </div>
+      </div>
+      <div class="teamGridHead">
+        <span>Member</span>
+        <span>Role</span>
+        <span>Skill</span>
+        <span>Lead</span>
+        <span></span>
       </div>
       <div class="teamMembers" id="teamMembers"></div>
     </div>
@@ -401,6 +413,39 @@
       </button>
       <button class="btn ghost" id="teamCancel">Cancel</button>
       <button class="btn primary" id="teamSave">Save team</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="skillsModal">
+  <div class="card skillsCard">
+    <h3>Edit skills</h3>
+    <div class="skillsBody">
+      <label for="skillPick">Skill</label>
+      <select id="skillPick"></select>
+      <label for="skillName">Name</label>
+      <input id="skillName" placeholder="e.g. Product Manager" />
+      <label for="skillRole">Role</label>
+      <input id="skillRole" placeholder="e.g. Product Manager" />
+      <label for="skillInstructions">Instructions</label>
+      <textarea
+        id="skillInstructions"
+        placeholder="Describe how this skill should behave when it is assigned to a team member."
+      ></textarea>
+      <label for="skillExpectedOutputs">Expected outputs</label>
+      <textarea id="skillExpectedOutputs" placeholder="One expected output per line"></textarea>
+      <label for="skillMode">Default mode</label>
+      <select id="skillMode">
+        <option value="plan">Plan</option>
+        <option value="edit">Edit</option>
+      </select>
+      <div class="skillEditorNote" id="skillEditorNote"></div>
+    </div>
+    <div class="foot">
+      <button class="btn ghost" id="skillNew" style="margin-right: auto">New skill</button>
+      <button class="btn ghost" id="skillDelete">Delete/reset</button>
+      <button class="btn ghost" id="skillsCancel">Done</button>
+      <button class="btn primary" id="skillSave">Save skill</button>
     </div>
   </div>
 </div>

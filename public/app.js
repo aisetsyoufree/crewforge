@@ -216,8 +216,18 @@ function notify(message, level = 'error') {
   setTimeout(() => toast.remove(), level === 'info' ? 2500 : 7000);
 }
 
+let _sessionExpired = false;
 async function api(p, opt) {
   const r = await fetch(p, opt);
+  if (r.status === 401) {
+    if (!_sessionExpired) {
+      _sessionExpired = true;
+      notify('Session lost — refresh the page to reconnect.', 'error');
+    }
+    const err = new Error('session_expired');
+    err.sessionExpired = true;
+    throw err;
+  }
   return r.json();
 }
 function setRunActive(active) {
@@ -993,7 +1003,7 @@ $('#fileFilter').oninput = () => {
 // ---------- bootstrap ----------
 (async () => {
   CAT = await api('/api/catalog');
-  SKILLS = await api('/api/skills');
+  await loadSkills();
   $('#provider').innerHTML = CAT.map(
     (a) =>
       `<option value="${a.id}" data-edit="${a.canEdit}">${esc(a.label)}${a.canEdit ? '' : ' (text only)'}</option>`
@@ -1723,6 +1733,12 @@ $('#fsUse').onclick = async () => {
 };
 
 // ---------- teams ----------
+async function loadSkills() {
+  SKILLS = await api('/api/skills');
+  refreshTeamSkillSelects();
+  if ($('#skillsModal') && $('#skillsModal').classList.contains('show')) renderSkillEditor();
+}
+
 function modelOptions(selected) {
   return CAT.map((a) => {
     const textOnly = a.canEdit ? '' : ' (text only)';
@@ -1742,6 +1758,90 @@ function skillOptions(selectedId) {
         `<option value="${esc(s.id)}" ${selectedId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`
     ).join('')
   );
+}
+function refreshTeamSkillSelects() {
+  const selects = [...document.querySelectorAll('.memberSkill')];
+  for (const select of selects) {
+    const selected = select.value;
+    select.innerHTML = skillOptions(selected);
+    select.value = SKILLS.some((skill) => skill.id === selected) ? selected : '';
+  }
+}
+function selectedSkill() {
+  return SKILLS.find((skill) => skill.id === $('#skillPick').value) || null;
+}
+function listField(value) {
+  return Array.isArray(value) ? value.join('\n') : '';
+}
+function fillSkillEditor(skill) {
+  $('#skillName').value = (skill && skill.name) || '';
+  $('#skillRole').value = (skill && skill.role) || '';
+  $('#skillInstructions').value = (skill && skill.instructions) || '';
+  $('#skillExpectedOutputs').value = skill ? listField(skill.expectedOutputs) : '';
+  $('#skillMode').value = skill && skill.preferredMode === 'edit' ? 'edit' : 'plan';
+  $('#skillDelete').disabled = !skill || !skill.custom;
+  $('#skillDelete').textContent = skill && skill.builtIn ? 'Reset' : 'Delete';
+  $('#skillEditorNote').textContent = skill
+    ? skill.custom
+      ? 'This is a local skill. It is stored on this machine and used in team prompts.'
+      : 'Built-in skill. Saving creates a local override; reset returns to the default.'
+    : 'Create a local skill for teams to use in orchestration prompts.';
+}
+function renderSkillEditor(selectId) {
+  const previous = selectId || $('#skillPick').value || (SKILLS[0] && SKILLS[0].id) || '';
+  $('#skillPick').innerHTML =
+    '<option value="">+ New skill</option>' +
+    SKILLS.map((skill) => {
+      const marker = skill.custom ? ' · local' : ' · built-in';
+      return `<option value="${esc(skill.id)}">${esc(skill.name)}${marker}</option>`;
+    }).join('');
+  $('#skillPick').value = SKILLS.some((skill) => skill.id === previous) ? previous : '';
+  fillSkillEditor(selectedSkill());
+}
+function openSkillsModal() {
+  renderSkillEditor();
+  $('#skillsModal').classList.add('show');
+  $('#skillPick').focus();
+}
+function closeSkillsModal() {
+  $('#skillsModal').classList.remove('show');
+}
+async function saveSkillFromEditor() {
+  const current = selectedSkill();
+  const skill = {
+    id: current ? current.id : undefined,
+    name: $('#skillName').value.trim(),
+    role: $('#skillRole').value.trim(),
+    instructions: $('#skillInstructions').value.trim(),
+    expectedOutputs: $('#skillExpectedOutputs')
+      .value.split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean),
+    preferredMode: $('#skillMode').value,
+  };
+  if (!skill.name || !skill.role || !skill.instructions) {
+    return notify('Skill name, role, and instructions are required.', 'warn');
+  }
+  const saved = await api('/api/skills', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ skill }),
+  });
+  if (saved.error) return notify(saved.error);
+  await loadSkills();
+  renderSkillEditor(saved.id);
+  notify('Skill saved.', 'info');
+}
+async function deleteSelectedSkill() {
+  const skill = selectedSkill();
+  if (!skill || !skill.custom) return;
+  const action = skill.builtIn ? 'Reset this skill to the built-in default?' : 'Delete this skill?';
+  if (!confirm(action)) return;
+  const result = await api('/api/skills?id=' + encodeURIComponent(skill.id), { method: 'DELETE' });
+  if (result.error) return notify(result.error);
+  await loadSkills();
+  renderSkillEditor();
+  notify(skill.builtIn ? 'Skill reset.' : 'Skill deleted.', 'info');
 }
 function updateMemberHint(row) {
   const val = row.querySelector('.memberModel').value;
@@ -1764,10 +1864,8 @@ function addMemberRow(member, idx) {
   row.innerHTML = `<select class="memberModel">${modelOptions(member)}</select>
     <input class="memberRole" placeholder="Role (e.g. reviewer)" value="${esc((member && member.role) || '')}" />
     <select class="memberSkill">${skillOptions(member && member.skillId)}</select>
-    <div class="teamRowActions">
-      <label class="leadLbl"><input type="radio" name="teamLead" value="${idx}" ${idx === editingTeam.leadIndex ? 'checked' : ''} /> Lead</label>
-      <button class="btn ghost rm" type="button" aria-label="Remove member">✕</button>
-    </div>`;
+    <label class="leadOnly" title="Team lead"><input type="radio" name="teamLead" value="${idx}" ${idx === editingTeam.leadIndex ? 'checked' : ''} aria-label="Team lead" /></label>
+    <button class="btn ghost rm" type="button" aria-label="Remove member">✕</button>`;
   if (sel) row.querySelector('.memberModel').value = sel;
   row.querySelector('.memberModel').onchange = () => updateMemberHint(row);
   updateMemberHint(row);
@@ -1956,10 +2054,10 @@ async function approvePlan() {
     hidePlan();
     startActivityPoll();
     loadUsage();
-  } catch (_e) {
+  } catch (e) {
     $('#planApprove').disabled = false;
     setRunActive(false);
-    notify('Unable to approve team plan.');
+    if (!e.sessionExpired) notify('Unable to approve team plan.');
   }
 }
 $('#delegate').onclick = delegateToTeam;
@@ -1975,6 +2073,16 @@ $('#addMember').onclick = () => {
   addMemberRow(null, $('#teamMembers').querySelectorAll('.teamRow').length);
   reindexLeadRadios();
 };
+$('#editSkills').onclick = openSkillsModal;
+$('#skillPick').onchange = () => fillSkillEditor(selectedSkill());
+$('#skillNew').onclick = () => {
+  $('#skillPick').value = '';
+  fillSkillEditor(null);
+  $('#skillName').focus();
+};
+$('#skillSave').onclick = saveSkillFromEditor;
+$('#skillDelete').onclick = deleteSelectedSkill;
+$('#skillsCancel').onclick = closeSkillsModal;
 $('#teamCancel').onclick = () => $('#teamModal').classList.remove('show');
 $('#teamSave').onclick = async () => {
   const team = collectTeamFromModal();

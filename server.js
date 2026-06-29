@@ -26,7 +26,9 @@
  *   GET  /api/teams                  saved teams
  *   POST /api/teams {team}           create/update a team
  *   DELETE /api/teams?id=            delete a team
- *   GET  /api/skills                 built-in crew skills
+ *   GET  /api/skills                 built-in and local crew skills
+ *   POST /api/skills {skill}         create/update a local crew skill
+ *   DELETE /api/skills?id=           delete/reset a local crew skill
  *   POST /api/plan {ws,sid,teamId,prompt}       propose team steps
  *   POST /api/approve {ws,sid,teamId,steps}     run approved team steps
  *   GET  /api/usage                              observed token usage across sessions
@@ -828,6 +830,24 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && p === '/api/teams') return json(res, 200, teams.listTeams());
     if (req.method === 'GET' && p === '/api/skills') return json(res, 200, skills.list());
+    if (req.method === 'POST' && p === '/api/skills') {
+      const data = await body(req, res);
+      if (!data) return;
+      try {
+        return json(res, 200, skills.save(data.skill));
+      } catch (err) {
+        return json(res, 400, { error: err.message || 'invalid skill' });
+      }
+    }
+    if (req.method === 'DELETE' && p === '/api/skills') {
+      const id = u.searchParams.get('id');
+      try {
+        const deleted = skills.deleteCustom(id);
+        return json(res, deleted ? 200 : 404, { ok: deleted });
+      } catch (err) {
+        return json(res, 400, { error: err.message || 'invalid skill id' });
+      }
+    }
     if (req.method === 'POST' && p === '/api/teams') {
       const data = await body(req, res);
       if (!data) return;

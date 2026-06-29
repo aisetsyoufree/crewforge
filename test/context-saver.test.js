@@ -31,10 +31,12 @@ test('normalizeMode defaults to balanced for unknown values', () => {
 });
 
 test('built-in context saver reduces prompt size in maximum mode', async () => {
-  const balanced = await contextSaver.buildSavedContext(events(40), 'Now do the next step', {
+  // Need enough events to exceed the maximum-mode maxChars (8000) but balanced handles them.
+  // Each event is ~80 chars; 120 events ≈ 9600 chars raw, above the 8000 maximum cap.
+  const balanced = await contextSaver.buildSavedContext(events(120), 'Now do the next step', {
     mode: 'balanced',
   });
-  const maximum = await contextSaver.buildSavedContext(events(40), 'Now do the next step', {
+  const maximum = await contextSaver.buildSavedContext(events(120), 'Now do the next step', {
     mode: 'maximum',
   });
 

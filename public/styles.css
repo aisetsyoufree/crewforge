@@ -1044,11 +1044,30 @@ select.model {
 .teamPick {
   margin-bottom: 0;
 }
-.teamRow {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr) minmax(0, 0.95fr) 118px;
+.teamMemberTools {
+  display: flex;
   gap: 8px;
   align-items: center;
+}
+.teamGridHead,
+.teamRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) 44px 40px;
+  gap: 8px;
+  align-items: center;
+}
+.teamGridHead {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+.teamGridHead span:nth-child(4),
+.teamGridHead span:nth-child(5) {
+  text-align: center;
+}
+.teamRow {
   margin-bottom: 8px;
 }
 .teamRow > select,
@@ -1056,23 +1075,14 @@ select.model {
   width: 100%;
   min-width: 0;
 }
-.teamRowActions {
+.teamRow .leadOnly {
   display: flex;
   align-items: center;
-  gap: 8px;
-  justify-content: flex-end;
-  min-width: 118px;
-}
-.teamRow .leadLbl {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--muted);
-  white-space: nowrap;
+  justify-content: center;
+  height: 32px;
   cursor: pointer;
 }
-.teamRow .leadLbl input {
+.teamRow .leadOnly input {
   margin: 0;
   accent-color: var(--claude);
 }
@@ -1082,13 +1092,17 @@ select.model {
   padding: 0;
   font-size: 11px;
   color: var(--bad);
+  justify-self: center;
 }
-@media (max-width: 760px) {
+@media (max-width: 620px) {
+  .teamGridHead {
+    display: none;
+  }
   .teamRow {
     grid-template-columns: 1fr;
   }
-  .teamRowActions {
-    justify-content: space-between;
+  .teamRow .leadOnly {
+    justify-content: flex-start;
   }
 }
 .teamMembers {
@@ -1098,6 +1112,30 @@ select.model {
 }
 .teamCard {
   width: min(760px, 96vw);
+}
+.skillsCard {
+  width: min(720px, 94vw);
+}
+.skillsBody {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+}
+.skillsBody label {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  margin-top: 4px;
+  text-transform: uppercase;
+}
+.skillsBody textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+.skillEditorNote {
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 18px;
 }
 .teamEmpty {
   color: var(--muted);
