@@ -156,11 +156,17 @@ function tokenizeCommand(cmd) {
 function startDevProc(wsId, wsPath, cmd) {
   const argv = tokenizeCommand(cmd);
   // Run with an allowlisted env (never the full process.env, which holds API keys).
-  // Leading KEY=VALUE assignments are pulled in so e.g. "PORT=3000 npm start" works.
+  // Leading KEY=VALUE assignments are pulled in so e.g. "PORT=3000 npm start" works,
+  // but only for a safe allowlist — never loader/runtime hijack vars (LD_PRELOAD,
+  // DYLD_*, NODE_OPTIONS) or arbitrary secrets.
   const env = safeCliEnv();
+  const DEV_ENV_ALLOW = new Set([
+    'PORT', 'HOST', 'NODE_ENV', 'DEBUG', 'BROWSER', 'HTTPS', 'CI', 'FORCE_COLOR',
+  ]);
   while (argv.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[0])) {
     const eq = argv[0].indexOf('=');
-    env[argv[0].slice(0, eq)] = argv[0].slice(eq + 1);
+    const key = argv[0].slice(0, eq);
+    if (DEV_ENV_ALLOW.has(key)) env[key] = argv[0].slice(eq + 1);
     argv.shift();
   }
   if (!argv.length) {

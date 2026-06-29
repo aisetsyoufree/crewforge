@@ -1078,6 +1078,16 @@ $('#fileFilter').oninput = () => {
   };
   $('#topStop').onclick = stopRun;
   $('#themeToggle').onclick = toggleTheme;
+  const advToggle = $('#advToggle');
+  if (advToggle)
+    advToggle.onclick = () => {
+      const adv = $('#advancedControls');
+      const show = adv.hasAttribute('hidden');
+      if (show) adv.removeAttribute('hidden');
+      else adv.setAttribute('hidden', '');
+      advToggle.setAttribute('aria-expanded', String(show));
+      advToggle.classList.toggle('on', show);
+    };
   $('#themeToggle').textContent = currentTheme === 'light' ? '☽' : '☀';
   const slider = $('#fontSizeSlider');
   if (slider) {
@@ -1093,7 +1103,10 @@ $('#fileFilter').oninput = () => {
   refreshContextSaverInfo();
   setInterval(loadUsage, 10000);
   // Load provider readiness so the first-run checklist + Send-gating are accurate.
-  loadOnboardingHealth().then(refreshEmptyState);
+  loadOnboardingHealth().then(() => {
+    refreshEmptyState();
+    updateCaps();
+  });
   if (!localStorage.getItem(ONBOARD_KEY)) openOnboarding();
 })();
 
@@ -1111,17 +1124,37 @@ function populateComposerModels() {
     .join('');
   if (a.defaultModel) $('#model').value = a.defaultModel;
 }
+function providerReadiness(id) {
+  if (!Array.isArray(onboardingHealth)) return null;
+  return onboardingHealth.find((p) => p.id === id) || null;
+}
 function updateCaps() {
   const a = selectedProvider();
-  $('#caps').textContent = a ? `models: ${a.models.join(', ')}` : '';
+  const caps = $('#caps');
+  if (a) {
+    const h = providerReadiness(a.id);
+    let badge = '';
+    if (h) badge = h.ready ? ' · <span class="provReady">● ready</span>' : ' · <span class="provNotReady">● needs setup</span>';
+    caps.innerHTML = `models: ${esc(a.models.join(', '))}${badge}`;
+  } else {
+    caps.textContent = '';
+  }
   const editBtn = $('#mode').querySelector('[data-m=edit]');
-  if (a && !a.canEdit) {
+  // Disable Edit when the model can't edit, OR when the workspace isn't a git repo
+  // (edits would be unreviewable / unrecoverable without version control).
+  const notRepo = !!(state.ws && activity.notRepo);
+  const blockEdit = (a && !a.canEdit) || notRepo;
+  if (blockEdit) {
     editBtn.disabled = true;
     editBtn.style.opacity = 0.4;
+    editBtn.title = notRepo
+      ? 'Edit needs a git repo so changes are reviewable/recoverable. This folder isn’t one — Plan mode only.'
+      : `${a ? a.id : 'This model'} is read-only (cannot edit files).`;
     if (state.mode === 'edit') setMode('plan');
   } else {
     editBtn.disabled = false;
     editBtn.style.opacity = 1;
+    editBtn.title = '';
   }
 }
 function setMode(m) {
@@ -1148,8 +1181,10 @@ function firstBlocker() {
     return { reason: 'Add a workspace folder to begin (＋ Add folder).', action: 'workspace' };
   return null;
 }
-function checklistRow(done, label, hint) {
-  return `<div class="checkRow ${done ? 'done' : ''}"><span class="checkMark">${done ? '✓' : '○'}</span><div><div class="checkLabel">${label}</div>${hint ? `<div class="checkHint">${hint}</div>` : ''}</div></div>`;
+function checklistRow(done, label, hint, action) {
+  const tag = action && !done ? 'button' : 'div';
+  const attrs = action && !done ? ` type="button" data-check="${action}"` : '';
+  return `<${tag} class="checkRow ${done ? 'done' : ''}${action && !done ? ' actionable' : ''}"${attrs}><span class="checkMark">${done ? '✓' : '○'}</span><div><div class="checkLabel">${label}${action && !done ? ' <span class="checkGo">→</span>' : ''}</div>${hint ? `<div class="checkHint">${hint}</div>` : ''}</div></${tag}>`;
 }
 function emptyStateHtml() {
   const provDone = anyProviderReady();
@@ -1158,8 +1193,8 @@ function emptyStateHtml() {
   return `<div class="firstRun">
     <h2>Welcome to Crew Forge</h2>
     <p class="firstRunSub">Run AI coding models against a local folder — solo or as a delegated team. Three steps to your first run:</p>
-    ${checklistRow(provDone, 'Connect a model', provDone ? 'A provider is signed in and ready.' : 'Open Connections (⚙ top-left) and sign in to Claude, Codex, or Grok.')}
-    ${checklistRow(wsDone, 'Pick a workspace', wsDone ? 'Working in this folder.' : 'Click “＋ Add folder” in the sidebar. Tip: choose a git repo so Edit, diffs, review, and teams all work.')}
+    ${checklistRow(provDone, 'Connect a model', provDone ? 'A provider is signed in and ready.' : 'Click here to open Connections and sign in to Claude, Codex, or Grok.', 'connect')}
+    ${checklistRow(wsDone, 'Pick a workspace', wsDone ? 'Working in this folder.' : 'Click here to add a folder. Tip: choose a git repo so Edit, diffs, review, and teams all work.', 'workspace')}
     ${checklistRow(false, 'Send your first prompt', notRepo ? 'Heads-up: this folder isn’t a git repo, so Edit / diff / review / teams are limited. Plan mode still works.' : 'Plan mode is read-only and safe. Switch to Edit to let the model change files.')}
   </div>`;
 }
@@ -1168,6 +1203,14 @@ function refreshEmptyState() {
   if (feed && feed.querySelector('.empty, .firstRun') && !feed.querySelector('.turn, .status'))
     feed.innerHTML = emptyStateHtml();
 }
+// Delegated handler so the checklist rows act as buttons.
+document.addEventListener('click', (e) => {
+  const row = e.target.closest && e.target.closest('[data-check]');
+  if (!row) return;
+  const action = row.dataset.check;
+  if (action === 'connect') openConnections();
+  else if (action === 'workspace') $('#addWs') && $('#addWs').click();
+});
 $('#mode')
   .querySelectorAll('button')
   .forEach((b) => (b.onclick = () => !b.disabled && setMode(b.dataset.m)));
@@ -1666,6 +1709,7 @@ function renderChanges(d) {
     activity.notRepo = true;
     activity.selected = null;
     updateRunControls();
+    updateCaps();
     $('#actFiles').innerHTML = `<div class="actEmpty">${NOT_REPO_MSG}</div>`;
     $('#actStat').textContent = '';
     $('#diffTitle').textContent = 'Diff';
@@ -1677,6 +1721,7 @@ function renderChanges(d) {
   activity.lastChanges = d;
   activity.changedFiles = d.files || [];
   updateRunControls();
+  updateCaps();
   const files = d.files || [];
   if (!files.length) {
     activity.selected = null;
@@ -2144,6 +2189,8 @@ function hidePlan() {
 }
 async function delegateToTeam() {
   if (!state.ws) return notify('Add/select a workspace first');
+  if (activity.notRepo)
+    return notify('Team delegation needs a git workspace (so each member’s edits are reviewable). This folder isn’t a git repo.');
   if (state.activeRun) return notify('A run is already active in this session.');
   const team = activeTeam();
   if (!team) return notify('Select a team first');

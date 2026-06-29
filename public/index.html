@@ -90,7 +90,7 @@
         <button data-m="plan" class="on">Plan (read-only)</button>
         <button data-m="edit">Edit (can change files)</button>
       </div>
-      <div class="ctrlGroup">
+      <div class="ctrlGroup" id="advancedControls" hidden>
         <span class="ctrlLabel">Context</span>
         <select class="ctrlSel" id="contextProvider" title="Context compression provider">
           <option value="builtin">Built-in</option>
@@ -102,6 +102,7 @@
           <option value="maximum">Maximum</option>
         </select>
       </div>
+      <button class="advToggle" id="advToggle" type="button" title="Context compression settings" aria-expanded="false">⋯ Advanced</button>
       <span id="caps" class="capsMuted"></span>
     </div>
     <textarea
@@ -346,6 +347,12 @@
 <div class="modal" id="teamModal">
   <div class="card teamCard">
     <h3 id="teamModalTitle">New team</h3>
+    <p class="teamIntro">
+      How delegation works: the <strong>lead</strong> model reads your request and the
+      workspace, breaks it into steps, and assigns each step to the <strong>member</strong>
+      whose role/skill fits best. Each member runs with the effort you set. Add members below,
+      pick one as lead, then use the <strong>▾ next to Send → Delegate to team</strong> to run it.
+    </p>
     <div style="padding: 12px 16px; border-bottom: 1px solid var(--line)">
       <label
         style="
