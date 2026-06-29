@@ -1,7 +1,27 @@
 const assert = require('node:assert');
 const test = require('node:test');
 
-const { parsePlan, validateSteps } = require('../lib/orchestrator');
+const { makePlanPrompt, parsePlan, validateSteps } = require('../lib/orchestrator');
+
+test('makePlanPrompt includes member skill guidance', () => {
+  const prompt = makePlanPrompt(
+    {
+      members: [
+        {
+          adapter: 'claude',
+          model: 'sonnet',
+          role: 'Product Manager',
+          skillId: 'product-manager',
+        },
+      ],
+    },
+    'Build a dashboard'
+  );
+
+  assert.ok(prompt.includes('skill=Product Manager'));
+  assert.ok(prompt.includes('Skill guidance'));
+  assert.ok(prompt.includes('Expected outputs'));
+});
 
 test('parsePlan returns steps from clean JSON', () => {
   const input = '{"steps":[{"memberIndex":0,"task":"x"}]}';

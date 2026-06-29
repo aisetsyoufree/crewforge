@@ -99,6 +99,22 @@
         <button data-m="plan" class="on">Plan (read-only)</button>
         <button data-m="edit">Edit (can change files)</button>
       </div>
+      <label class="contextSaver">
+        <span>Context Saver</span>
+        <select class="model" id="contextMode" title="Compress older context before each run">
+          <option value="off">Off</option>
+          <option value="balanced">Balanced</option>
+          <option value="maximum">Maximum</option>
+        </select>
+        <button
+          class="contextSaverBadge"
+          id="contextSaverBadge"
+          type="button"
+          title="Context Saver details"
+        >
+          checking
+        </button>
+      </label>
       <span id="caps" style="font-size: 11px; color: var(--muted)"></span>
     </div>
     <textarea
@@ -120,11 +136,61 @@
   <div class="resizeHandle" id="rightResize" title="Drag to resize activity panel"></div>
 
   <div class="panelTabs" role="tablist" aria-label="Right panel">
-    <button class="panelTab on" data-tab="files" role="tab" aria-selected="true" aria-controls="paneFiles" id="tab-files" type="button">Files</button>
-    <button class="panelTab" data-tab="terminal" role="tab" aria-selected="false" aria-controls="paneTerminal" id="tab-terminal" type="button">Run</button>
-    <button class="panelTab" data-tab="preview" role="tab" aria-selected="false" aria-controls="panePreview" id="tab-preview" type="button">Preview</button>
-    <button class="panelTab" data-tab="changes" role="tab" aria-selected="false" aria-controls="paneChanges" id="tab-changes" type="button">Changes</button>
-    <button class="panelTab" data-tab="usage" role="tab" aria-selected="false" aria-controls="paneUsage" id="tab-usage" type="button">Usage</button>
+    <button
+      class="panelTab on"
+      data-tab="files"
+      role="tab"
+      aria-selected="true"
+      aria-controls="paneFiles"
+      id="tab-files"
+      type="button"
+    >
+      Files
+    </button>
+    <button
+      class="panelTab"
+      data-tab="terminal"
+      role="tab"
+      aria-selected="false"
+      aria-controls="paneTerminal"
+      id="tab-terminal"
+      type="button"
+    >
+      Run
+    </button>
+    <button
+      class="panelTab"
+      data-tab="preview"
+      role="tab"
+      aria-selected="false"
+      aria-controls="panePreview"
+      id="tab-preview"
+      type="button"
+    >
+      Preview
+    </button>
+    <button
+      class="panelTab"
+      data-tab="changes"
+      role="tab"
+      aria-selected="false"
+      aria-controls="paneChanges"
+      id="tab-changes"
+      type="button"
+    >
+      Changes
+    </button>
+    <button
+      class="panelTab"
+      data-tab="usage"
+      role="tab"
+      aria-selected="false"
+      aria-controls="paneUsage"
+      id="tab-usage"
+      type="button"
+    >
+      Usage
+    </button>
   </div>
 
   <!-- Files pane -->
@@ -142,7 +208,15 @@
     <div class="fileBreadcrumb">
       <button class="btn ghost filePaneUp" id="filePaneUp" disabled type="button">↑ Up</button>
       <span id="filePanePath"></span>
-      <button class="btn ghost" id="fileRefresh" type="button" title="Refresh" style="margin-left:auto;padding:3px 7px;font-size:11px">↺</button>
+      <button
+        class="btn ghost"
+        id="fileRefresh"
+        type="button"
+        title="Refresh"
+        style="margin-left: auto; padding: 3px 7px; font-size: 11px"
+      >
+        ↺
+      </button>
     </div>
     <div class="fileTree" id="fileTree">
       <div class="actEmpty">No workspace selected.</div>
@@ -152,30 +226,66 @@
   <!-- Terminal / Run pane -->
   <div class="panelPane hidden" id="paneTerminal" role="tabpanel" aria-labelledby="tab-terminal">
     <div class="termControls">
-      <input id="devCmd" class="devCmd" type="text" placeholder="npm start" autocomplete="off" spellcheck="false" aria-label="Start command" />
+      <input
+        id="devCmd"
+        class="devCmd"
+        type="text"
+        placeholder="npm start"
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Start command"
+      />
       <button class="btn primary" id="devRun" type="button">Run</button>
-      <button class="btn ghost" id="devStop" type="button" style="display:none;color:var(--bad)">Stop</button>
+      <button class="btn ghost" id="devStop" type="button" style="display: none; color: var(--bad)">
+        Stop
+      </button>
       <button class="btn ghost" id="devClear" type="button" title="Clear output">✕</button>
     </div>
     <div class="termStatus" id="termStatus"></div>
-    <pre class="termOutput" id="termOutput"><span class="termMeta">No process running. Enter a command and click Run.</span></pre>
+    <pre
+      class="termOutput"
+      id="termOutput"
+    ><span class="termMeta">No process running. Enter a command and click Run.</span></pre>
     <div class="agentLogHead">
       <span>Agent commands</span>
       <button class="btn ghost agentLogToggle" id="agentLogToggle" type="button">▾ show</button>
     </div>
     <div class="agentLogBody hidden" id="agentLogBody">
-      <pre class="termOutput agentLog" id="agentLog"><span class="termMeta">No commands yet.</span></pre>
+      <pre
+        class="termOutput agentLog"
+        id="agentLog"
+      ><span class="termMeta">No commands yet.</span></pre>
     </div>
   </div>
 
   <!-- Preview pane -->
   <div class="panelPane hidden" id="panePreview" role="tabpanel" aria-labelledby="tab-preview">
     <div class="previewBar">
-      <input id="previewUrl" class="previewUrl" type="url" value="http://localhost:3000" autocomplete="off" aria-label="Preview URL" />
+      <input
+        id="previewUrl"
+        class="previewUrl"
+        type="url"
+        value="http://localhost:3000"
+        autocomplete="off"
+        aria-label="Preview URL"
+      />
       <button class="btn primary" id="previewLoad" type="button">Load</button>
-      <a class="btn ghost" id="previewExternal" href="http://localhost:3000" target="_blank" rel="noopener noreferrer" title="Open in browser">↗</a>
+      <a
+        class="btn ghost"
+        id="previewExternal"
+        href="http://localhost:3000"
+        target="_blank"
+        rel="noopener noreferrer"
+        title="Open in browser"
+        >↗</a
+      >
     </div>
-    <iframe id="previewFrame" class="previewFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" title="App preview"></iframe>
+    <iframe
+      id="previewFrame"
+      class="previewFrame"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+      title="App preview"
+    ></iframe>
   </div>
 
   <!-- Changes pane -->
@@ -302,11 +412,23 @@
       <div class="connectionsCaption">
         Keys are stored locally in data/keys.json (never committed) and sent only to that provider.
       </div>
+      <div id="contextSaverStatus" class="contextSaverStatus"></div>
       <div id="connectionsRows"></div>
     </div>
     <div class="foot">
       <button class="btn ghost" id="connectionsRefresh">Refresh</button
       ><button class="btn primary" id="connectionsClose">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="contextSaverModal">
+  <div class="card contextInfoCard">
+    <h3>Context Saver</h3>
+    <div class="contextInfoBody" id="contextSaverInfoBody"></div>
+    <div class="foot">
+      <button class="btn ghost" id="contextSaverOpenConnections">Connections</button>
+      <button class="btn primary" id="contextSaverClose">Done</button>
     </div>
   </div>
 </div>

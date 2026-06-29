@@ -27,7 +27,8 @@ Use it as a human-approved coding workspace, not as a fully autonomous engineer.
 - Run Edit mode for providers that can modify files.
 - Show Git activity, changed files, and diffs.
 - Create teams with named members, roles, models, and skills.
-- Assign a lead that creates delegation plans for team execution.
+- Assign a lead that creates delegation plans using each member's role and selected skill.
+- Compress older session context before provider calls with Context Saver.
 - Store durable task/project artifacts for the crew workflow.
 - Use Git worktrees for edit-mode task isolation in the crew task engine.
 - Ask another model to review uncommitted changes.
@@ -94,7 +95,7 @@ A Raspberry Pi can run the Node server if Node.js, Git, and the provider tools a
 
 1. Open the app.
 2. Check provider readiness in the onboarding or Connections panel.
-3. Add a trusted Git workspace.
+3. Add a trusted Git workspace. On macOS, **Add folder** opens the native folder picker; if unavailable, Crew Forge falls back to the in-app folder browser.
 4. Start in **Plan (read-only)** mode.
 5. Use **Edit** mode only after you understand the risks.
 6. Review the Activity panel and Git diff before accepting changes.
@@ -113,13 +114,40 @@ Read [SECURITY.md](SECURITY.md), [DISCLAIMER.md](DISCLAIMER.md), and [TRADEMARKS
 
 By default the folder picker stays inside your home folder and hides sensitive credential/config directories. Remote binding requires an explicit auth token and is not recommended for beta testers; use `?token=<value>` once to establish a browser session.
 
+## Context Saver
+
+The composer includes `Context Saver` modes:
+
+- `Off`: keep the legacy session context behavior.
+- `Balanced`: default. Compress older history while keeping recent turns.
+- `Maximum`: smallest prompt context for long sessions.
+
+Crew Forge always has a built-in local compactor. If the optional `headroom-ai` package is installed and `HEADROOM_BASE_URL` or `HEADROOM_API_KEY` is configured, Crew Forge tries Headroom first and falls back to the built-in compactor if Headroom is unavailable.
+
+| Saver    | What it does                                                                                                                | Setup                                                                          | Best for                                                   |
+| -------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| Built-in | Keeps recent turns, summarizes older turns, records touched files, and caps prompt context size before each provider call.  | Included with Crew Forge.                                                      | Reliable default savings with no extra install.            |
+| Headroom | Delegates compression to the optional Headroom proxy/API through `headroom-ai`, then falls back to built-in if unavailable. | Install `headroom-ai` and configure `HEADROOM_BASE_URL` or `HEADROOM_API_KEY`. | More advanced compression when users already run Headroom. |
+
+The composer badge shows the active path:
+
+- `built-in`: Crew Forge is saving context locally.
+- `Headroom`: the optional Headroom path is active.
+- `off`: context saving is disabled.
+
+```bash
+npm install headroom-ai
+```
+
+This is an efficiency feature for reducing repeated/noisy context, not a way to bypass provider terms or account limits.
+
 ## Development
 
 ```bash
 npm test
 ```
 
-The app intentionally has no runtime dependencies. The server is a small Node HTTP app, the UI is vanilla HTML/CSS/JS, and persistent local state lives under ignored `data/`.
+The server is a small Node HTTP app, the UI is vanilla HTML/CSS/JS, and persistent local state lives under ignored `data/`.
 
 ## License
 

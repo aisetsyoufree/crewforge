@@ -101,8 +101,8 @@ test('member objects are preserved', (t) => {
   t.after(() => restoreTeams(before));
 
   const members = [
-    { adapter: 'codex', model: 'gpt-4.1', role: 'implementer' },
-    { adapter: 'claude', model: 'sonnet', role: 'reviewer' },
+    { adapter: 'codex', model: 'gpt-4.1', role: 'implementer', skillId: 'staff-engineer' },
+    { adapter: 'claude', model: 'sonnet', role: 'reviewer', skillId: 'qa-reviewer' },
   ];
   const saved = teams.saveTeam({
     id: 'team-members-test',

@@ -9,7 +9,9 @@
  *   GET  /app.js                   dashboard client script
  *   GET  /api/catalog              available models/adapters
  *   GET  /api/health               provider readiness checks
+ *   GET  /api/context-saver        context saver and optional Headroom status
  *   GET  /api/fs?path=             folder browser (list subdirectories)
+ *   POST /api/fs/pick-folder       open native folder picker when supported
  *   GET  /api/workspaces           saved workspaces
  *   POST /api/workspaces {path}    add a workspace
  *   DELETE /api/workspaces?id=     forget a workspace
@@ -24,6 +26,7 @@
  *   GET  /api/teams                  saved teams
  *   POST /api/teams {team}           create/update a team
  *   DELETE /api/teams?id=            delete a team
+ *   GET  /api/skills                 built-in crew skills
  *   POST /api/plan {ws,sid,teamId,prompt}       propose team steps
  *   POST /api/approve {ws,sid,teamId,steps}     run approved team steps
  *   GET  /api/usage                              observed token usage across sessions
@@ -35,7 +38,7 @@
  *   GET  /api/dev/status?ws=                     dev server running state
  *   GET  /api/dev/stream?ws=                     SSE stream of dev server stdout/stderr
  *
- * Zero dependencies. Node >= 18.
+ * Node >= 18.
  */
 
 const http = require('http');
@@ -49,7 +52,8 @@ const store = require('./lib/store');
 const watcher = require('./lib/watcher');
 const teams = require('./lib/teams');
 const orchestrator = require('./lib/orchestrator');
-const { compact } = require('./lib/compactor');
+const contextSaver = require('./lib/context_saver');
+const skills = require('./lib/skills');
 const usage = require('./lib/usage');
 const { buildReviewPrompt } = require('./lib/review');
 const keys = require('./lib/keys');
@@ -116,11 +120,17 @@ function stopDevProc(wsId) {
   devProcs.delete(wsId);
   try {
     info.proc.kill('SIGTERM');
-    setTimeout(() => { try { info.proc.kill('SIGKILL'); } catch {} }, 3000);
+    setTimeout(() => {
+      try {
+        info.proc.kill('SIGKILL');
+      } catch {}
+    }, 3000);
   } catch {}
 }
 
-process.on('exit', () => { for (const wsId of devProcs.keys()) stopDevProc(wsId); });
+process.on('exit', () => {
+  for (const wsId of devProcs.keys()) stopDevProc(wsId);
+});
 const REQUESTED_HOST = process.env.CREW_FORGE_HOST || '127.0.0.1';
 const AUTH_TOKEN_ENV = process.env.CREW_FORGE_AUTH_TOKEN || '';
 const ALLOW_REMOTE = process.env.CREW_FORGE_ALLOW_REMOTE === '1' && !!AUTH_TOKEN_ENV;
@@ -346,10 +356,28 @@ function finishRun(key, controller) {
 }
 
 // Build a compact transcript preamble so stateless CLI calls keep context.
-function buildContext(wsId, sid, newPrompt) {
-  const transcript = compact(store.readEvents(wsId, sid), { keepRecent: 8, maxChars: 6000 });
-  if (!transcript) return newPrompt;
-  return `${transcript}\n\nNow respond to:\n${newPrompt}`;
+async function buildContext(wsId, sid, newPrompt, options = {}) {
+  const mode = contextSaver.normalizeMode(options.contextMode || 'balanced');
+  const result = await contextSaver.buildSavedContext(store.readEvents(wsId, sid), newPrompt, {
+    mode,
+    model: options.model,
+  });
+  if (result.provider && result.tokensSaved > 0) {
+    store.append(wsId, sid, {
+      kind: 'system',
+      actor: 'context',
+      type: 'usage',
+      text: `${result.provider} context saver kept about ${result.tokensSaved} tokens out of this request`,
+      meta: {
+        provider: result.provider,
+        beforeTokens: result.beforeTokens,
+        afterTokens: result.afterTokens,
+        tokensSaved: result.tokensSaved,
+        contextMode: mode,
+      },
+    });
+  }
+  return result.prompt;
 }
 
 async function commandExists(bin) {
@@ -371,6 +399,19 @@ async function commandVersion(bin) {
       return '';
     }
   }
+}
+
+async function pickNativeFolder() {
+  if (process.platform !== 'darwin') {
+    const err = new Error('native folder picker is only available on macOS');
+    err.code = 'UNSUPPORTED_PLATFORM';
+    throw err;
+  }
+  const script = [
+    'set selectedFolder to choose folder with prompt "Choose a Crew Forge workspace"',
+    'POSIX path of selectedFolder',
+  ].join('\n');
+  return String(await execFileP('osascript', ['-e', script], { encoding: 'utf8' })).trim();
 }
 
 function parseVersion(text) {
@@ -495,6 +536,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && p === '/api/catalog') return json(res, 200, adapters.catalog());
     if (req.method === 'GET' && p === '/api/health') return json(res, 200, await providerHealth());
+    if (req.method === 'GET' && p === '/api/context-saver')
+      return json(res, 200, contextSaver.status());
 
     if (req.method === 'GET' && p === '/ONBOARDING.md') {
       return send(
@@ -562,7 +605,15 @@ const server = http.createServer(async (req, res) => {
           : allFiles;
         const isRepo = fs.existsSync(path.join(abs, '.git'));
         const parent = abs === HOME ? null : path.dirname(abs);
-        return json(res, 200, { path: abs, parent, isRepo, dirs: cappedDirs, files, truncated, total });
+        return json(res, 200, {
+          path: abs,
+          parent,
+          isRepo,
+          dirs: cappedDirs,
+          files,
+          truncated,
+          total,
+        });
       } catch (e) {
         return json(res, 400, {
           error: e.message,
@@ -572,6 +623,20 @@ const server = http.createServer(async (req, res) => {
           dirs: [],
           files: [],
         });
+      }
+    }
+
+    if (req.method === 'POST' && p === '/api/fs/pick-folder') {
+      try {
+        const picked = await pickNativeFolder();
+        assertSafePath(path.resolve(picked));
+        return json(res, 200, { path: picked, isRepo: isGitRepoPath(picked) });
+      } catch (e) {
+        const message = String((e && (e.stderr || e.message)) || e);
+        if (/user canceled/i.test(message)) return json(res, 200, { cancelled: true });
+        if (e && e.code === 'UNSUPPORTED_PLATFORM')
+          return json(res, 501, { error: e.message, fallback: true });
+        return json(res, 400, { error: message.trim() || 'Unable to choose folder' });
       }
     }
 
@@ -659,7 +724,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/review') {
       const data = await body(req, res);
       if (!data) return;
-      const { ws, sid, reviewer, reviewerModel } = data;
+      const { ws, sid, reviewer, reviewerModel, contextMode } = data;
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
@@ -679,7 +744,10 @@ const server = http.createServer(async (req, res) => {
       const changes = watcher.getChanges(wsObj.path);
       const fileCount = (changes.files || []).length;
       const prompt = buildReviewPrompt(diff);
-      const fullPrompt = buildContext(ws, sid, prompt);
+      const fullPrompt = await buildContext(ws, sid, prompt, {
+        contextMode,
+        model: reviewerModel,
+      });
       const run = startRun(ws, sid);
       if (!run) return json(res, 409, { error: 'run already active for this session' });
 
@@ -759,6 +827,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && p === '/api/teams') return json(res, 200, teams.listTeams());
+    if (req.method === 'GET' && p === '/api/skills') return json(res, 200, skills.list());
     if (req.method === 'POST' && p === '/api/teams') {
       const data = await body(req, res);
       if (!data) return;
@@ -767,6 +836,8 @@ const server = http.createServer(async (req, res) => {
       for (const m of team.members || []) {
         if (!adapters.adapters[m.adapter])
           return json(res, 400, { error: `unknown adapter: ${m.adapter}` });
+        if (m.skillId && !skills.get(m.skillId))
+          return json(res, 400, { error: `unknown skill: ${m.skillId}` });
       }
       const lead = Number(team.leadIndex);
       if (
@@ -788,7 +859,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/plan') {
       const data = await body(req, res);
       if (!data) return;
-      const { ws, sid, teamId, prompt } = data;
+      const { ws, sid, teamId, prompt, contextMode } = data;
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
@@ -818,7 +889,7 @@ const server = http.createServer(async (req, res) => {
           adapters,
           buildContext,
           store,
-          team,
+          team: { ...team, contextMode },
           prompt,
           ws,
           sid,
@@ -846,7 +917,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/approve') {
       const data = await body(req, res);
       if (!data) return;
-      const { ws, sid, teamId, steps } = data;
+      const { ws, sid, teamId, steps, contextMode } = data;
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
@@ -872,7 +943,7 @@ const server = http.createServer(async (req, res) => {
           adapters,
           buildContext,
           store,
-          team,
+          team: { ...team, contextMode },
           steps,
           ws,
           sid,
@@ -895,7 +966,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/run') {
       const data = await body(req, res);
       if (!data) return;
-      const { ws, sid, adapter, model, mode, prompt, role } = data;
+      const { ws, sid, adapter, model, mode, prompt, role, contextMode } = data;
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
@@ -920,7 +991,7 @@ const server = http.createServer(async (req, res) => {
         meta: { running: true },
       });
 
-      const fullPrompt = buildContext(ws, sid, prompt);
+      const fullPrompt = await buildContext(ws, sid, prompt, { contextMode, model });
       adapters
         .run(
           adapter,
@@ -972,8 +1043,9 @@ const server = http.createServer(async (req, res) => {
       const data = await body(req, res);
       if (!data) return;
       const { ws: wsId, cmd } = data;
-      if (!wsId || !isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
-      if (!cmd || typeof cmd !== 'string' || !cmd.trim()) return json(res, 400, { error: 'cmd required' });
+      if (!wsId || !store.isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
+      if (!cmd || typeof cmd !== 'string' || !cmd.trim())
+        return json(res, 400, { error: 'cmd required' });
       const wsObj = store.listWorkspaces().find((w) => w.id === wsId);
       if (!wsObj) return json(res, 404, { error: 'unknown workspace' });
       const info = startDevProc(wsId, wsObj.path, cmd.trim());
@@ -984,29 +1056,44 @@ const server = http.createServer(async (req, res) => {
       const data = await body(req, res);
       if (!data) return;
       const { ws: wsId } = data;
-      if (!wsId || !isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
+      if (!wsId || !store.isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
       stopDevProc(wsId);
       return json(res, 200, { ok: true });
     }
 
     if (p === '/api/dev/status' && req.method === 'GET') {
       const wsId = u.searchParams.get('ws');
-      if (!wsId || !isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
+      if (!wsId || !store.isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
       const info = devProcs.get(wsId);
-      return json(res, 200, { running: !!info, cmd: info ? info.cmd : null, pid: info ? info.pid : null });
+      return json(res, 200, {
+        running: !!info,
+        cmd: info ? info.cmd : null,
+        pid: info ? info.pid : null,
+      });
     }
 
     if (p === '/api/dev/stream' && req.method === 'GET') {
       const wsId = u.searchParams.get('ws');
-      if (!wsId || !isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-      const send = (ev) => { try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch {} };
+      if (!wsId || !store.isValidId(wsId)) return json(res, 400, { error: 'invalid ws' });
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      const send = (ev) => {
+        try {
+          res.write(`data: ${JSON.stringify(ev)}\n\n`);
+        } catch {}
+      };
       const info = devProcs.get(wsId);
       if (info) {
         for (const ev of info.output) send(ev);
         info.listeners.add(send);
       }
-      req.on('close', () => { const i = devProcs.get(wsId); if (i) i.listeners.delete(send); });
+      req.on('close', () => {
+        const i = devProcs.get(wsId);
+        if (i) i.listeners.delete(send);
+      });
       return;
     }
 
