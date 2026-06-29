@@ -2,9 +2,25 @@
 
 const { spawn } = require('child_process');
 const readline = require('readline');
-const { ev, cliExitError, safeCliEnv } = require('./base');
+const { EFFORT_LEVELS, ev, normalizeEffort, cliExitError, safeCliEnv } = require('./base');
 
 const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+function buildArgs({ prompt, model, effort, mode }) {
+  const args = [
+    '--print',
+    prompt,
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    '--permission-mode',
+    mode === 'edit' ? 'acceptEdits' : 'plan',
+  ];
+  if (model) args.push('--model', model);
+  const normalizedEffort = normalizeEffort(effort);
+  if (normalizedEffort) args.push('--effort', normalizedEffort);
+  return args;
+}
 
 // Claude stream-json: system/init, assistant{message.content[]}, rate_limit_event,
 // result{result,usage,total_cost_usd}. Content blocks: text | thinking | tool_use.
@@ -15,22 +31,15 @@ module.exports = {
   canEdit: true,
   defaultModel: 'sonnet',
   models: ['sonnet', 'opus', 'haiku'],
+  effortLevels: EFFORT_LEVELS,
+  defaultEffort: 'medium',
+  _buildArgs: buildArgs,
 
   run({ prompt, model, effort, cwd, mode, signal }, onEvent) {
     if (signal && signal.aborted)
       return Promise.resolve({ finalText: '', usage: null, cancelled: true });
     return new Promise((resolve) => {
-      const args = [
-        '--print',
-        prompt,
-        '--output-format',
-        'stream-json',
-        '--verbose',
-        '--permission-mode',
-        mode === 'edit' ? 'acceptEdits' : 'plan',
-      ];
-      if (model) args.push('--model', model);
-      if (effort) args.push('--effort', effort);
+      const args = buildArgs({ prompt, model, effort, mode });
 
       const child = spawn('claude', args, {
         stdio: ['ignore', 'pipe', 'pipe'],

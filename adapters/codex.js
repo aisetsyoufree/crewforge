@@ -2,7 +2,31 @@
 
 const { spawn } = require('child_process');
 const readline = require('readline');
-const { ev, cliExitError, safeCliEnv } = require('./base');
+const { ev, normalizeEffort, cliExitError, safeCliEnv } = require('./base');
+
+const CODEX_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'];
+
+function buildArgs({ prompt, model, effort, cwd, mode }) {
+  const sandbox = mode === 'edit' ? 'workspace-write' : 'read-only';
+  const args = [
+    'exec',
+    '--json',
+    '--sandbox',
+    sandbox,
+    '--skip-git-repo-check',
+    '-C',
+    cwd || process.cwd(),
+  ];
+  const normalizedEffort =
+    String(effort || '').toLowerCase() === 'max'
+      ? 'xhigh'
+      : normalizeEffort(effort, CODEX_EFFORT_LEVELS);
+  if (normalizedEffort)
+    args.push('-c', `model_reasoning_effort=${JSON.stringify(normalizedEffort)}`);
+  if (model) args.push('-m', model);
+  args.push(prompt);
+  return args;
+}
 
 // Codex emits JSONL: thread.started / item.completed{item} / turn.completed{usage}
 module.exports = {
@@ -12,23 +36,15 @@ module.exports = {
   canEdit: true,
   defaultModel: 'gpt-5.5',
   models: ['gpt-5.5', 'gpt-5.5-codex'],
+  effortLevels: CODEX_EFFORT_LEVELS,
+  defaultEffort: 'medium',
+  _buildArgs: buildArgs,
 
-  run({ prompt, model, cwd, mode, signal }, onEvent) {
+  run({ prompt, model, effort, cwd, mode, signal }, onEvent) {
     if (signal && signal.aborted)
       return Promise.resolve({ finalText: '', usage: null, cancelled: true });
     return new Promise((resolve) => {
-      const sandbox = mode === 'edit' ? 'workspace-write' : 'read-only';
-      const args = [
-        'exec',
-        '--json',
-        '--sandbox',
-        sandbox,
-        '--skip-git-repo-check',
-        '-C',
-        cwd || process.cwd(),
-      ];
-      if (model) args.push('-m', model);
-      args.push(prompt);
+      const args = buildArgs({ prompt, model, effort, cwd, mode });
 
       const child = spawn('codex', args, { stdio: ['ignore', 'pipe', 'pipe'], env: safeCliEnv() });
       const rl = readline.createInterface({ input: child.stdout });

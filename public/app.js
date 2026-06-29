@@ -26,6 +26,7 @@ const BOTTOM_H_KEY = 'crewforge.bottomH';
 const RIGHT_TAB_KEY = 'crewforge.rightTab';
 const CONTEXT_MODE_KEY = 'crewforge.contextMode';
 const CONTEXT_PROVIDER_KEY = 'crewforge.contextProvider';
+const EFFORT_KEY = 'crewforge.effort';
 const THEME_KEY = 'crewforge.theme';
 const FONT_SIZE_KEY = 'crewforge.fontSize';
 const LEFT_WIDTH_MIN = 200;
@@ -41,6 +42,8 @@ let contextMode = localStorage.getItem(CONTEXT_MODE_KEY) || 'balanced';
 if (!['off', 'balanced', 'maximum'].includes(contextMode)) contextMode = 'balanced';
 let contextProvider = localStorage.getItem(CONTEXT_PROVIDER_KEY) || 'builtin';
 if (!['builtin', 'headroom'].includes(contextProvider)) contextProvider = 'builtin';
+let directEffort = localStorage.getItem(EFFORT_KEY) || '';
+if (!['', 'low', 'medium', 'high', 'xhigh', 'max'].includes(directEffort)) directEffort = '';
 let contextSaverInfo = null;
 
 // ── theme ──────────────────────────────────────────────────
@@ -1066,10 +1069,16 @@ $('#fileFilter').oninput = () => {
   ).join('');
   $('#provider').onchange = () => {
     populateComposerModels();
+    populateEffortOptions();
     updateCaps();
     populateReviewModels();
   };
   $('#model').onchange = updateCaps;
+  $('#effort').onchange = () => {
+    directEffort = $('#effort').value;
+    localStorage.setItem(EFFORT_KEY, directEffort);
+    updateCaps();
+  };
   $('#contextProvider').value = contextProvider;
   $('#contextProvider').onchange = () => {
     contextProvider = $('#contextProvider').value;
@@ -1109,6 +1118,7 @@ $('#fileFilter').oninput = () => {
     slider.oninput = () => applyFontSize(Number(slider.value));
   }
   populateComposerModels();
+  populateEffortOptions();
   updateCaps();
   populateReviewModels();
   await loadWorkspaces();
@@ -1138,6 +1148,36 @@ function populateComposerModels() {
     .join('');
   if (a.defaultModel) $('#model').value = a.defaultModel;
 }
+function effortLabel(level) {
+  const labels = {
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    xhigh: 'Extra high',
+    max: 'Max',
+  };
+  return labels[level] || level;
+}
+function populateEffortOptions() {
+  const a = selectedProvider();
+  const sel = $('#effort');
+  const levels = (a && a.effortLevels) || [];
+  if (!levels.length) {
+    sel.innerHTML = '<option value="">Effort: Default</option>';
+    sel.value = '';
+    sel.disabled = true;
+    sel.title = 'This provider does not expose an effort setting in Crew Forge yet';
+    return;
+  }
+  sel.disabled = false;
+  sel.title = 'Choose reasoning effort for this direct run';
+  sel.innerHTML =
+    '<option value="">Effort: Default</option>' +
+    levels
+      .map((level) => `<option value="${esc(level)}">Effort: ${esc(effortLabel(level))}</option>`)
+      .join('');
+  sel.value = levels.includes(directEffort) ? directEffort : '';
+}
 function providerReadiness(id) {
   if (!Array.isArray(onboardingHealth)) return null;
   return onboardingHealth.find((p) => p.id === id) || null;
@@ -1152,7 +1192,11 @@ function updateCaps() {
       badge = h.ready
         ? ' · <span class="provReady">● ready</span>'
         : ' · <span class="provNotReady">● needs setup</span>';
-    caps.innerHTML = `models: ${esc(a.models.join(', '))}${badge}`;
+    const effortText =
+      a.effortLevels && a.effortLevels.length
+        ? ` · effort: ${esc($('#effort').value || 'default')}`
+        : '';
+    caps.innerHTML = `models: ${esc(a.models.join(', '))}${effortText}${badge}`;
   } else {
     caps.textContent = '';
   }
@@ -1577,6 +1621,7 @@ async function send() {
         sid: state.sid,
         adapter: $('#provider').value,
         model: $('#model').value,
+        effort: $('#effort').value,
         mode: state.mode,
         prompt,
         contextMode,
@@ -2074,11 +2119,11 @@ function updateMemberHint(row) {
     hint.textContent = 'This provider cannot edit files — steps run as analysis only.';
   } else if (hint) hint.remove();
 }
-const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'];
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 function effortOptions(current) {
   return EFFORT_LEVELS.map(
     (e) =>
-      `<option value="${e}"${e === (current || 'medium') ? ' selected' : ''}>${e.charAt(0).toUpperCase() + e.slice(1)}</option>`
+      `<option value="${e}"${e === (current || 'medium') ? ' selected' : ''}>${esc(effortLabel(e))}</option>`
   ).join('');
 }
 function addMemberRow(member, idx) {

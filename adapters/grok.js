@@ -2,7 +2,33 @@
 
 const { spawn } = require('child_process');
 const readline = require('readline');
-const { ev, TokenStreamer, cliExitError, safeCliEnv } = require('./base');
+const {
+  EFFORT_LEVELS,
+  ev,
+  normalizeEffort,
+  TokenStreamer,
+  cliExitError,
+  safeCliEnv,
+} = require('./base');
+
+function buildArgs({ prompt, model, effort, cwd, mode }) {
+  const args = [
+    '--single',
+    prompt,
+    '--output-format',
+    'streaming-json',
+    '--permission-mode',
+    mode === 'edit' ? 'acceptEdits' : 'plan',
+    '--cwd',
+    cwd || process.cwd(),
+  ];
+  if (mode === 'edit') args.push('--always-approve');
+  else args.push('--tools', 'read_file,grep,list_dir');
+  const normalizedEffort = normalizeEffort(effort);
+  if (normalizedEffort) args.push('--effort', normalizedEffort);
+  if (model) args.push('-m', model);
+  return args;
+}
 
 // Grok streaming-json emits token events: {type:"thought",data} {type:"text",data}
 // {type:"end",stopReason,...}. Tool/file events appear as other types during
@@ -14,25 +40,14 @@ module.exports = {
   canEdit: true,
   defaultModel: 'grok-build',
   models: ['grok-build', 'grok-composer-2.5-fast'],
+  effortLevels: EFFORT_LEVELS,
+  defaultEffort: 'medium',
+  _buildArgs: buildArgs,
 
-  run({ prompt, model, cwd, mode, signal }, onEvent) {
+  run({ prompt, model, effort, cwd, mode, signal }, onEvent) {
     if (signal && signal.aborted) return Promise.resolve({ finalText: '', cancelled: true });
     return new Promise((resolve) => {
-      // Headless Grok uses --single. Plan mode restricts the available tools;
-      // edit mode allows approvals so it can modify files in the workspace.
-      const args = [
-        '--single',
-        prompt,
-        '--output-format',
-        'streaming-json',
-        '--permission-mode',
-        mode === 'edit' ? 'acceptEdits' : 'plan',
-        '--cwd',
-        cwd || process.cwd(),
-      ];
-      if (mode === 'edit') args.push('--always-approve');
-      else args.push('--tools', 'read_file,grep,list_dir');
-      if (model) args.push('-m', model);
+      const args = buildArgs({ prompt, model, effort, cwd, mode });
 
       const child = spawn('grok', args, { stdio: ['ignore', 'pipe', 'pipe'], env: safeCliEnv() });
       const rl = readline.createInterface({ input: child.stdout });

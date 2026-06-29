@@ -24,6 +24,17 @@ function ev(type, text, meta) {
   return { ts: Date.now(), type, text: text || '', meta: meta || null };
 }
 
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+function normalizeEffort(effort, allowed = EFFORT_LEVELS) {
+  const value = String(effort || '')
+    .trim()
+    .toLowerCase();
+  if (!value || value === 'default') return null;
+  const normalized = value === 'extra-high' || value === 'extra high' ? 'xhigh' : value;
+  return allowed.includes(normalized) ? normalized : null;
+}
+
 function stderrTail(stderr, maxChars = 1600) {
   const raw = String(stderr || '');
   if (!raw) return '';
@@ -94,4 +105,12 @@ class TokenStreamer {
   }
 }
 
-module.exports = { ev, TokenStreamer, stderrTail, cliExitError, safeCliEnv };
+module.exports = {
+  EFFORT_LEVELS,
+  ev,
+  normalizeEffort,
+  TokenStreamer,
+  stderrTail,
+  cliExitError,
+  safeCliEnv,
+};

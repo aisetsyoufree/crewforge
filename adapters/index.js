@@ -23,6 +23,8 @@ function catalog() {
     canEdit: a.canEdit,
     defaultModel: a.defaultModel,
     models: a.models,
+    effortLevels: a.effortLevels || [],
+    defaultEffort: a.defaultEffort || null,
   }));
 }
 

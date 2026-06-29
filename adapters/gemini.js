@@ -12,6 +12,7 @@ module.exports = {
   canEdit: false,
   defaultModel: 'gemini-2.5-pro',
   models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  effortLevels: [],
 
   async run({ prompt, model, signal }, onEvent) {
     if (signal && signal.aborted) return { finalText: '', cancelled: true };

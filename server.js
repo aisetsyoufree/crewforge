@@ -82,7 +82,7 @@ const skills = require('./lib/skills');
 const usage = require('./lib/usage');
 const { buildReviewPrompt } = require('./lib/review');
 const keys = require('./lib/keys');
-const { safeCliEnv } = require('./adapters/base');
+const { normalizeEffort, safeCliEnv } = require('./adapters/base');
 
 const PORT = Number(process.argv[2]) || 4178;
 const ROOT = __dirname;
@@ -1134,6 +1134,7 @@ const server = http.createServer(async (req, res) => {
       const data = await body(req, res);
       if (!data) return;
       const { ws, sid, adapter, model, mode, prompt, role, contextMode, contextProvider } = data;
+      const effort = normalizeEffort(data.effort);
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
@@ -1154,7 +1155,7 @@ const server = http.createServer(async (req, res) => {
         kind: 'system',
         actor: adapter,
         type: 'status',
-        text: `${adapter}${model ? ' · ' + model : ''} (${mode || 'plan'}) running…`,
+        text: `${adapter}${model ? ' · ' + model : ''}${effort ? ' · ' + effort : ''} (${mode || 'plan'}) running…`,
         meta: { running: true },
       });
 
@@ -1169,6 +1170,7 @@ const server = http.createServer(async (req, res) => {
           {
             prompt: fullPrompt,
             model,
+            effort,
             cwd: wsObj.path,
             mode: mode || 'plan',
             signal: run.controller.signal,
