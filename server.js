@@ -1134,11 +1134,17 @@ const server = http.createServer(async (req, res) => {
       const data = await body(req, res);
       if (!data) return;
       const { ws, sid, adapter, model, mode, prompt, role, contextMode, contextProvider } = data;
-      const effort = normalizeEffort(data.effort);
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
       if (!adapters.adapters[adapter]) return json(res, 400, { error: 'unknown adapter' });
+      const allowedEfforts = adapters.effortLevels(adapter, model);
+      const effort = normalizeEffort(data.effort, allowedEfforts);
+      if (data.effort && String(data.effort).toLowerCase() !== 'default' && !effort) {
+        return json(res, 400, {
+          error: `unsupported effort for ${adapter}${model ? ' ' + model : ''}: ${data.effort}`,
+        });
+      }
       if (mode === 'edit' && !isGitRepoPath(wsObj.path))
         return json(res, 400, { error: 'Edit mode requires a git workspace' });
       const run = startRun(ws, sid);

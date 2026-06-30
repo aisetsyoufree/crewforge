@@ -1073,7 +1073,10 @@ $('#fileFilter').oninput = () => {
     updateCaps();
     populateReviewModels();
   };
-  $('#model').onchange = updateCaps;
+  $('#model').onchange = () => {
+    populateEffortOptions();
+    updateCaps();
+  };
   $('#effort').onchange = () => {
     directEffort = $('#effort').value;
     localStorage.setItem(EFFORT_KEY, directEffort);
@@ -1158,15 +1161,22 @@ function effortLabel(level) {
   };
   return labels[level] || level;
 }
-function populateEffortOptions() {
+function modelEffortLevels() {
   const a = selectedProvider();
+  if (!a) return [];
+  const model = $('#model').value;
+  if (a.modelEffortLevels && model && model in a.modelEffortLevels)
+    return a.modelEffortLevels[model];
+  return a.effortLevels || [];
+}
+function populateEffortOptions() {
   const sel = $('#effort');
-  const levels = (a && a.effortLevels) || [];
+  const levels = modelEffortLevels();
   if (!levels.length) {
     sel.innerHTML = '<option value="">Effort: Default</option>';
     sel.value = '';
     sel.disabled = true;
-    sel.title = 'This provider does not expose an effort setting in Crew Forge yet';
+    sel.title = 'This model does not expose an effort setting in Crew Forge yet';
     return;
   }
   sel.disabled = false;
@@ -1192,10 +1202,9 @@ function updateCaps() {
       badge = h.ready
         ? ' · <span class="provReady">● ready</span>'
         : ' · <span class="provNotReady">● needs setup</span>';
-    const effortText =
-      a.effortLevels && a.effortLevels.length
-        ? ` · effort: ${esc($('#effort').value || 'default')}`
-        : '';
+    const effortText = modelEffortLevels().length
+      ? ` · effort: ${esc($('#effort').value || 'default')}`
+      : '';
     caps.innerHTML = `models: ${esc(a.models.join(', '))}${effortText}${badge}`;
   } else {
     caps.textContent = '';

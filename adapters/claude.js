@@ -5,6 +5,11 @@ const readline = require('readline');
 const { EFFORT_LEVELS, ev, normalizeEffort, cliExitError, safeCliEnv } = require('./base');
 
 const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+const CLAUDE_MODEL_EFFORT_LEVELS = {
+  sonnet: ['low', 'medium', 'high'],
+  opus: EFFORT_LEVELS,
+  haiku: ['low', 'medium', 'high'],
+};
 
 function buildArgs({ prompt, model, effort, mode }) {
   const args = [
@@ -17,7 +22,10 @@ function buildArgs({ prompt, model, effort, mode }) {
     mode === 'edit' ? 'acceptEdits' : 'plan',
   ];
   if (model) args.push('--model', model);
-  const normalizedEffort = normalizeEffort(effort);
+  const normalizedEffort = normalizeEffort(
+    effort,
+    CLAUDE_MODEL_EFFORT_LEVELS[model] || EFFORT_LEVELS
+  );
   if (normalizedEffort) args.push('--effort', normalizedEffort);
   return args;
 }
@@ -32,6 +40,7 @@ module.exports = {
   defaultModel: 'sonnet',
   models: ['sonnet', 'opus', 'haiku'],
   effortLevels: EFFORT_LEVELS,
+  modelEffortLevels: CLAUDE_MODEL_EFFORT_LEVELS,
   defaultEffort: 'medium',
   _buildArgs: buildArgs,
 

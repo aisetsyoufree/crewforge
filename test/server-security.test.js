@@ -111,4 +111,21 @@ test('HTTP CSRF gate and dev command rejection are enforced', async (t) => {
   assert.equal(escapingPath.status, 400);
   const escapingPathBody = await escapingPath.json();
   assert.match(escapingPathBody.error, /absolute paths or parent directories/i);
+
+  const unsupportedEffort = await fetch(`${baseUrl}/api/run`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie, 'x-csrf-token': csrf },
+    body: JSON.stringify({
+      ws: workspace.id,
+      sid: 'effort-test',
+      adapter: 'claude',
+      model: 'sonnet',
+      effort: 'max',
+      mode: 'plan',
+      prompt: 'say ok',
+    }),
+  });
+  assert.equal(unsupportedEffort.status, 400);
+  const unsupportedEffortBody = await unsupportedEffort.json();
+  assert.match(unsupportedEffortBody.error, /unsupported effort/i);
 });

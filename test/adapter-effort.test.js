@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const claude = require('../adapters/claude');
+const adapters = require('../adapters');
 const codex = require('../adapters/codex');
 const grok = require('../adapters/grok');
 const { normalizeEffort } = require('../adapters/base');
@@ -26,6 +27,28 @@ test('Claude CLI receives effort flag for supported direct runs', () => {
   assert.deepEqual(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2), [
     '--effort',
     'high',
+  ]);
+});
+
+test('Claude Sonnet only advertises and forwards low/medium/high effort', () => {
+  assert.deepEqual(adapters.effortLevels('claude', 'sonnet'), ['low', 'medium', 'high']);
+  const args = claude._buildArgs({
+    prompt: 'hello',
+    model: 'sonnet',
+    effort: 'max',
+    mode: 'plan',
+  });
+
+  assert.equal(args.includes('--effort'), false);
+});
+
+test('Claude Opus keeps extended effort options', () => {
+  assert.deepEqual(adapters.effortLevels('claude', 'opus'), [
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
   ]);
 });
 

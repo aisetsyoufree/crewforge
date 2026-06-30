@@ -24,8 +24,18 @@ function catalog() {
     defaultModel: a.defaultModel,
     models: a.models,
     effortLevels: a.effortLevels || [],
+    modelEffortLevels: a.modelEffortLevels || null,
     defaultEffort: a.defaultEffort || null,
   }));
+}
+
+function effortLevels(adapterId, model) {
+  const a = adapters[adapterId];
+  if (!a) return [];
+  if (a.modelEffortLevels && model && Object.hasOwn(a.modelEffortLevels, model)) {
+    return a.modelEffortLevels[model] || [];
+  }
+  return a.effortLevels || [];
 }
 
 // Uniform entry point: run one agent turn, streaming normalized events.
@@ -33,4 +43,4 @@ function run(adapterId, spec, onEvent) {
   return get(adapterId).run(spec, onEvent);
 }
 
-module.exports = { adapters, get, catalog, run };
+module.exports = { adapters, get, catalog, effortLevels, run };
