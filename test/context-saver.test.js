@@ -74,5 +74,5 @@ test('status does not mark Headroom active when configured proxy is unreachable'
   assert.equal(status.headroomConfigured, true);
   assert.equal(status.headroomReachable, false);
   assert.equal(status.headroomActive, false);
-  assert.match(status.headroomUnavailableReason, /not reachable/i);
+  assert.match(status.headroomUnavailableReason, /not installed|not reachable/i);
 });

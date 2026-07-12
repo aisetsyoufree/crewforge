@@ -228,7 +228,29 @@ function startDevProc(wsId, wsPath, cmd) {
   assertWorkspaceBoundDevCommand(argv);
   stopDevProc(wsId);
   const [bin, ...args] = argv;
-  const proc = spawn(bin, args, { cwd: wsPath, env, shell: false });
+  const allowedExecutables = Object.freeze({
+    npm: 'npm',
+    npx: 'npx',
+    node: 'node',
+    pnpm: 'pnpm',
+    yarn: 'yarn',
+    bun: 'bun',
+    deno: 'deno',
+    python: 'python',
+    python3: 'python3',
+    uv: 'uv',
+    go: 'go',
+    cargo: 'cargo',
+    ruby: 'ruby',
+    php: 'php',
+  });
+  const executable = allowedExecutables[bin];
+  if (!executable) {
+    const e = new Error(`Unsupported dev command: ${bin}`);
+    e.userSafe = true;
+    throw e;
+  }
+  const proc = spawn(executable, args, { cwd: wsPath, env, shell: false });
   const info = { proc, cmd, pid: proc.pid, output: [], listeners: new Set() };
   devProcs.set(wsId, info);
   const pushLine = (text, type) => {

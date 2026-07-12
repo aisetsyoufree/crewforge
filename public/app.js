@@ -1418,8 +1418,8 @@ $('#previewUrl').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') loadPreview();
 });
 $('#previewUrl').addEventListener('input', () => {
-  const url = $('#previewUrl').value.trim();
-  $('#previewExternal').href = url && isAllowedPreviewUrl(url) ? url : '#';
+  // Keep the external link inert until Load validates and applies the local URL.
+  $('#previewExternal').href = '#';
 });
 $('#fileFilter').oninput = () => {
   fileExplorer.filter = $('#fileFilter').value.trim().toLowerCase();
