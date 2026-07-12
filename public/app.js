@@ -1841,6 +1841,7 @@ async function selectWs(id, list) {
   state.ws = id;
   state.wsPath = w.path;
   if (changed) state.sid = null;
+  $('#exportSession').disabled = !state.sid;
   $('#wsName').textContent = w.name;
   $('#wsPath').textContent = w.path;
   saveProfileSettings({ selectedWorkspaceId: id, selectedSessionId: state.sid || '' });
@@ -1873,6 +1874,7 @@ async function forgetWorkspace() {
     state.ws = null;
     state.wsPath = null;
     state.sid = null;
+    $('#exportSession').disabled = true;
   }
   await loadWorkspaces();
 }
@@ -1903,9 +1905,37 @@ $('#newSess').onclick = async () => {
   openSession(r.id);
 };
 
+async function exportSelectedSession() {
+  if (!state.ws || !state.sid) return notify('Select a session to export.');
+  const button = $('#exportSession');
+  button.disabled = true;
+  try {
+    const response = await fetch(
+      `/api/sessions/export?ws=${encodeURIComponent(state.ws)}&sid=${encodeURIComponent(state.sid)}`
+    );
+    if (!response.ok) throw new Error('export failed');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `crewforge-session-${state.sid}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    notify('Session CSV exported. Review it before sharing.', 'info');
+  } catch {
+    notify('Unable to export this session.');
+  } finally {
+    button.disabled = !state.sid;
+  }
+}
+$('#exportSession').onclick = exportSelectedSession;
+
 // ---------- session stream ----------
 function openSession(sid) {
   state.sid = sid;
+  $('#exportSession').disabled = false;
   tasksUi.projectId = null;
   tasksUi.selectedTaskId = null;
   saveProfileSettings({ selectedWorkspaceId: state.ws, selectedSessionId: sid });

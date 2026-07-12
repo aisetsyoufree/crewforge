@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-beta.4
+
+- Per-session CSV export for troubleshooting, with spreadsheet-formula injection protection.
+
 ## 0.1.0-beta.3
 
 - Session task tracker: team plans create a durable project with per-step status, evidence, and a read-only **Tasks** right-panel tab (no manual status edits).

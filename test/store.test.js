@@ -72,6 +72,27 @@ test('addWorkspace and removeWorkspace manage saved workspace list', (t) => {
   assert.equal(store.removeWorkspace(added.id), false);
 });
 
+test('session CSV export preserves diagnostics and neutralizes spreadsheet formulas', () => {
+  const csv = store.eventsToCsv([
+    {
+      ts: 0,
+      seq: 4,
+      kind: 'agent',
+      actor: 'claude',
+      role: 'developer',
+      model: 'sonnet',
+      type: 'message',
+      text: '=HYPERLINK("https://example.invalid","click")\nnext line',
+      meta: { final: true },
+    },
+  ]);
+
+  assert.match(csv, /"timestamp","sequence","kind","actor","role","model","type","text","meta"/);
+  assert.match(csv, /1970-01-01T00:00:00\.000Z/);
+  assert.match(csv, /"'=HYPERLINK\(""https:\/\/example\.invalid"",""click""\)\nnext line"/);
+  assert.match(csv, /"\{""final"":true\}"/);
+});
+
 test('local profile settings and backup export/import persist app state', (t) => {
   const beforeWorkspaces = readRaw(workspaceFile);
   const beforeProfile = readRaw(profileFile);
