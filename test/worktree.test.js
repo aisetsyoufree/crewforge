@@ -7,7 +7,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const { create, list, remove, diff } = require('../lib/worktree');
+const {
+  create,
+  createUnique,
+  list,
+  remove,
+  diff,
+  inspect,
+  preflightApply,
+  apply,
+  reject,
+  resolveRegisteredWorktree,
+} = require('../lib/worktree');
 
 function git(cwd, args) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
@@ -137,6 +148,134 @@ test('name sanitization strips special characters', () => {
       !/[ /!]/.test(suffix),
       `branch suffix "${suffix}" should not contain spaces, slashes, or bangs`
     );
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test('createUnique always allocates a new registered worktree', () => {
+  const repo = makeRepo();
+  try {
+    const a = createUnique(repo, 'team-step-1');
+    const b = createUnique(repo, 'team-step-1');
+    assert.notEqual(a.worktreeId, b.worktreeId);
+    assert.ok(resolveRegisteredWorktree(repo, a.worktreeId));
+    assert.ok(resolveRegisteredWorktree(repo, b.worktreeId));
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test('diff captures untracked new files via intent-to-add', () => {
+  const repo = makeRepo();
+  try {
+    const { path: wtPath, worktreeId } = create(repo, 'featB');
+    const newFile = path.join(wtPath, 'brand-new.txt');
+    fs.writeFileSync(newFile, 'untracked content');
+    const output = diff(repo, worktreeId);
+    assert.ok(output.includes('brand-new.txt'), `expected untracked file in diff: ${output}`);
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test('inspect returns diff summary without exposing arbitrary paths', () => {
+  const repo = makeRepo();
+  try {
+    const { path: wtPath, worktreeId } = create(repo, 'featInspect');
+    fs.writeFileSync(path.join(wtPath, 'note.txt'), 'inspect me');
+    git(wtPath, ['add', 'note.txt']);
+    const info = inspect(repo, worktreeId);
+    assert.equal(info.worktreeId, worktreeId);
+    assert.ok(info.branch.startsWith('crewforge/'));
+    assert.ok(info.diff.includes('note.txt'));
+    assert.ok(info.diffSummary.fileCount >= 1);
+    assert.equal('path' in info, false);
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test('apply integrates patch into main workspace and removes worktree', () => {
+  const repo = makeRepo();
+  try {
+    const { path: wtPath, worktreeId } = create(repo, 'featApply');
+    fs.writeFileSync(path.join(wtPath, 'integrated.txt'), 'ship it');
+    git(wtPath, ['add', 'integrated.txt']);
+
+    const mainPath = path.join(repo, 'integrated.txt');
+    assert.ok(!fs.existsSync(mainPath));
+
+    apply(repo, worktreeId);
+    assert.ok(fs.existsSync(mainPath));
+    assert.equal(fs.readFileSync(mainPath, 'utf8'), 'ship it');
+    assert.throws(() => resolveRegisteredWorktree(repo, worktreeId));
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test('reject discards pending worktree and leaves main checkout untouched', () => {
+  const repo = makeRepo();
+  try {
+    const { path: wtPath, worktreeId } = create(repo, 'featReject');
+    fs.writeFileSync(path.join(wtPath, 'reject-me.txt'), 'nope');
+    git(wtPath, ['add', 'reject-me.txt']);
+
+    reject(repo, worktreeId);
+    assert.ok(!fs.existsSync(path.join(repo, 'reject-me.txt')));
+    assert.throws(() => resolveRegisteredWorktree(repo, worktreeId));
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test('failed apply retains pending worktree for review', () => {
+  const repo = makeRepo();
+  try {
+    const { path: wtPath, worktreeId } = create(repo, 'featConflict');
+    fs.writeFileSync(path.join(repo, 'conflict.txt'), 'main version\n');
+    git(repo, ['add', 'conflict.txt']);
+    git(repo, ['commit', '-m', 'main edit']);
+
+    fs.writeFileSync(path.join(wtPath, 'conflict.txt'), 'worktree version\n');
+    git(wtPath, ['add', 'conflict.txt']);
+
+    const preflight = preflightApply(repo, worktreeId);
+    assert.equal(preflight.ok, false);
+    assert.ok(preflight.error);
+
+    assert.throws(() => apply(repo, worktreeId), /apply --check|patch failed|error/i);
+    assert.ok(resolveRegisteredWorktree(repo, worktreeId));
+    assert.equal(fs.readFileSync(path.join(repo, 'conflict.txt'), 'utf8'), 'main version\n');
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test('diff --binary captures binary file changes', () => {
+  const repo = makeRepo();
+  try {
+    const { path: wtPath, worktreeId } = create(repo, 'featBinary');
+    fs.writeFileSync(path.join(wtPath, 'data.bin'), Buffer.from([0, 1, 2, 255, 0]));
+    git(wtPath, ['add', 'data.bin']);
+    const output = diff(repo, worktreeId);
+    assert.ok(
+      /GIT binary patch|Binary files/.test(output),
+      `expected binary diff markers, got: ${output.slice(0, 200)}`
+    );
+    assert.ok(output.includes('data.bin'));
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test('resolveRegisteredWorktree rejects traversal and invalid ids', () => {
+  const repo = makeRepo();
+  try {
+    assert.throws(() => resolveRegisteredWorktree(repo, '../escape'), /Invalid worktree id/);
+    assert.throws(() => resolveRegisteredWorktree(repo, 'no/such'), /Invalid worktree id/);
+    assert.throws(() => resolveRegisteredWorktree(repo, 'missing-id'), /Worktree does not exist/);
   } finally {
     cleanup(repo);
   }

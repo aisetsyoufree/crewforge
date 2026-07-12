@@ -1,7 +1,7 @@
 {
   "name": "crew-forge",
-  "version": "0.1.0-beta.2",
-  "description": "Crew Forge — a local-first AI software team manager: assign an objective to a lead, who orchestrates a crew of model-backed members (Claude, Codex, Grok, Gemini) across planning, implementation, review and QA.",
+  "version": "0.1.0-beta.3",
+  "description": "Crew Forge — a local-first AI software team manager: assign an objective to a lead, who orchestrates a crew of model-backed members across planning, implementation, review and QA.",
   "license": "SEE LICENSE IN LICENSE",
   "author": "aisetsyoufree",
   "repository": {
@@ -22,6 +22,7 @@
     "codex",
     "grok",
     "gemini",
+    "antigravity",
     "coding-agent",
     "local-first",
     "cli",
@@ -33,7 +34,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
     "start": "node server.js"
   },
   "bin": {

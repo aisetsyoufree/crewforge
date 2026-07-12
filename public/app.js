@@ -25,6 +25,10 @@ const RIGHT_WIDTH_KEY = 'crewforge.rightWidth';
 const BOTTOM_H_KEY = 'crewforge.bottomH';
 const RIGHT_TAB_KEY = 'crewforge.rightTab';
 const CONTEXT_MODE_KEY = 'crewforge.contextMode';
+const CONTEXT_PROVIDER_KEY = 'crewforge.contextProvider';
+const EFFORT_KEY = 'crewforge.effort';
+const THEME_KEY = 'crewforge.theme';
+const FONT_SIZE_KEY = 'crewforge.fontSize';
 const LEFT_WIDTH_MIN = 200;
 const LEFT_WIDTH_MAX = 520;
 const RIGHT_WIDTH_MIN = 260;
@@ -36,27 +40,79 @@ let sessionSort = localStorage.getItem(SESSION_SORT_KEY) || 'newest';
 if (sessionSort !== 'newest' && sessionSort !== 'oldest') sessionSort = 'newest';
 let contextMode = localStorage.getItem(CONTEXT_MODE_KEY) || 'balanced';
 if (!['off', 'balanced', 'maximum'].includes(contextMode)) contextMode = 'balanced';
+let contextProvider = localStorage.getItem(CONTEXT_PROVIDER_KEY) || 'builtin';
+if (!['builtin', 'headroom'].includes(contextProvider)) contextProvider = 'builtin';
+let directEffort = localStorage.getItem(EFFORT_KEY) || '';
+if (!['', 'low', 'medium', 'high', 'xhigh', 'max'].includes(directEffort)) directEffort = '';
 let contextSaverInfo = null;
+let PROFILE_SETTINGS = {};
+let profileLoaded = false;
+let profileSaveTimer = null;
+let profilePendingSettings = {};
+let profileSaveErrorShown = false;
+const integrationBusy = new Set();
+
+// ── theme ──────────────────────────────────────────────────
+let currentTheme = localStorage.getItem(THEME_KEY) || 'dark';
+function applyTheme(theme) {
+  currentTheme = theme;
+  document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : '');
+  const btn = $('#themeToggle');
+  if (btn) btn.textContent = theme === 'light' ? '☽' : '☀';
+  localStorage.setItem(THEME_KEY, theme);
+  saveProfileSettings({ theme });
+}
+function toggleTheme() {
+  applyTheme(currentTheme === 'light' ? 'dark' : 'light');
+}
+applyTheme(currentTheme);
+
+// ── font size ──────────────────────────────────────────────
+let currentFontSize = Number(localStorage.getItem(FONT_SIZE_KEY)) || 14;
+if (currentFontSize < 12 || currentFontSize > 18) currentFontSize = 14;
+function applyFontSize(size) {
+  currentFontSize = size;
+  document.documentElement.style.setProperty('--ui-font-size', size + 'px');
+  localStorage.setItem(FONT_SIZE_KEY, size);
+  saveProfileSettings({ fontSize: size });
+}
+applyFontSize(currentFontSize);
 const NOT_REPO_MSG = 'Not a git repository — file activity & diff/review need a git repo';
 const COLOR = {
   claude: 'var(--claude)',
   codex: 'var(--codex)',
   grok: 'var(--grok)',
+  antigravity: 'var(--gemini)',
   gemini: 'var(--gemini)',
   user: 'var(--user)',
   team: 'var(--ok)',
 };
-const AV = { claude: 'C', codex: 'Cx', grok: 'Gk', gemini: 'Gm', user: 'You', team: 'Tm' };
+const AV = {
+  claude: 'C',
+  codex: 'Cx',
+  grok: 'Gk',
+  antigravity: 'Ag',
+  gemini: 'Gm',
+  user: 'You',
+  team: 'Tm',
+};
 const CONNECTIONS = [
   { id: 'claude', name: 'Claude', method: 'CLI subscription login', apiKey: false },
   { id: 'codex', name: 'Codex', method: 'CLI subscription login', apiKey: false },
   { id: 'grok', name: 'Grok', method: 'CLI subscription login', apiKey: false },
-  { id: 'gemini', name: 'Gemini', method: 'API key', apiKey: true },
+  {
+    id: 'antigravity',
+    name: 'Google Antigravity',
+    method: 'Antigravity app sign-in',
+    apiKey: false,
+  },
+  { id: 'gemini', name: 'Gemini API (legacy)', method: 'API key', apiKey: true },
 ];
 const LOGIN_COMMANDS = {
   claude: 'claude login',
   codex: 'codex login',
   grok: 'grok login --device-auth',
+  antigravity: 'agy models',
 };
 let onboardingStep = 0,
   onboardingHealth = null,
@@ -216,9 +272,16 @@ function notify(message, level = 'error') {
   setTimeout(() => toast.remove(), level === 'info' ? 2500 : 7000);
 }
 
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 let _sessionExpired = false;
 async function api(p, opt) {
-  const r = await fetch(p, opt);
+  const o = opt ? { ...opt } : {};
+  const method = (o.method || 'GET').toUpperCase();
+  // Mutating requests must carry the CSRF token the server injected into the page.
+  if (method !== 'GET' && method !== 'HEAD') {
+    o.headers = { ...(o.headers || {}), 'X-CSRF-Token': CSRF_TOKEN };
+  }
+  const r = await fetch(p, o);
   if (r.status === 401) {
     if (!_sessionExpired) {
       _sessionExpired = true;
@@ -230,15 +293,124 @@ async function api(p, opt) {
   }
   return r.json();
 }
+function applyProfileSettings(settings) {
+  const s = settings && typeof settings === 'object' ? settings : {};
+  PROFILE_SETTINGS = s;
+  if (s.sessionSort === 'newest' || s.sessionSort === 'oldest') sessionSort = s.sessionSort;
+  if (['off', 'balanced', 'maximum'].includes(s.contextMode)) contextMode = s.contextMode;
+  if (['builtin', 'headroom'].includes(s.contextProvider)) contextProvider = s.contextProvider;
+  if (['', 'low', 'medium', 'high', 'xhigh', 'max'].includes(s.directEffort || ''))
+    directEffort = s.directEffort || '';
+  if (s.theme === 'light' || s.theme === 'dark') applyTheme(s.theme);
+  if (Number.isFinite(Number(s.fontSize))) applyFontSize(Number(s.fontSize));
+}
+function localProfileFallbackSettings() {
+  const out = {
+    sessionSort,
+    contextMode,
+    contextProvider,
+    directEffort,
+    activeTeamId: localStorage.getItem(ACTIVE_TEAM_KEY) || '',
+    theme: currentTheme,
+    fontSize: currentFontSize,
+  };
+  return Object.fromEntries(
+    Object.entries(out).filter(([, value]) => value !== '' && value != null)
+  );
+}
+async function loadProfile() {
+  let settings = {};
+  try {
+    const profile = await api('/api/profile');
+    settings = (profile && profile.settings) || {};
+    applyProfileSettings(settings);
+  } catch {
+    PROFILE_SETTINGS = {};
+  }
+  profileLoaded = true;
+  const migration = {};
+  const fallback = localProfileFallbackSettings();
+  for (const [key, value] of Object.entries(fallback)) {
+    if (settings[key] == null || settings[key] === '') migration[key] = value;
+  }
+  if (Object.keys(migration).length) {
+    try {
+      const profile = await api('/api/profile', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ settings: migration }),
+      });
+      PROFILE_SETTINGS = (profile && profile.settings) || { ...PROFILE_SETTINGS, ...migration };
+    } catch {
+      notify('Unable to save local profile settings. Export may not include current UI choices.');
+    }
+  }
+}
+function saveProfileSettings(patch) {
+  if (!profileLoaded) return;
+  profilePendingSettings = { ...profilePendingSettings, ...patch };
+  clearTimeout(profileSaveTimer);
+  profileSaveTimer = setTimeout(async () => {
+    const settings = profilePendingSettings;
+    profilePendingSettings = {};
+    try {
+      await api('/api/profile', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ settings }),
+      });
+      PROFILE_SETTINGS = { ...PROFILE_SETTINGS, ...settings };
+      profileSaveErrorShown = false;
+    } catch {
+      if (!profileSaveErrorShown) {
+        profileSaveErrorShown = true;
+        notify('Unable to save local profile settings. Changes may not persist after restart.');
+      }
+    }
+  }, 250);
+}
+let _elapsedTimer = null;
+function startElapsedTick() {
+  if (_elapsedTimer) return;
+  _elapsedTimer = setInterval(() => {
+    document.querySelectorAll('.runningStatus').forEach((el) => {
+      const start = Number(el.dataset.start);
+      if (!start) return;
+      const secs = Math.floor((Date.now() - start) / 1000);
+      const span = el.querySelector('.elapsed');
+      if (span)
+        span.textContent = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+    });
+  }, 1000);
+}
+function stopElapsedTick() {
+  if (_elapsedTimer) {
+    clearInterval(_elapsedTimer);
+    _elapsedTimer = null;
+  }
+}
+function fmtNum(n) {
+  if (n == null || n === '') return '?';
+  const v = Number(n);
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v);
+}
 function setRunActive(active) {
   state.activeRun = !!active;
   updateRunControls();
+  if (active) startElapsedTick();
+  else stopElapsedTick();
 }
 function updateRunControls() {
   const active = state.activeRun;
   $('#send').disabled = active;
   $('#stop').style.display = active ? 'inline-block' : 'none';
   $('#stop').disabled = false;
+  const topStop = $('#topStop');
+  if (topStop) {
+    topStop.style.display = active ? 'inline-flex' : 'none';
+    topStop.disabled = false;
+  }
+  $('#splitCaret').disabled = active;
   $('#delegate').disabled = active;
   $('#reviewBtn').disabled = active || activity.notRepo;
   $('#reviewGo').disabled = active || activity.notRepo;
@@ -268,9 +440,9 @@ async function loadConnections() {
       : 'Managed outside this app';
     const controls = c.apiKey
       ? `<div class="connControls" data-provider="${c.id}">
-      <input type="password" autocomplete="off" placeholder="Paste ${esc(c.name)} API key" />
-      <button class="btn primary saveKey" type="button">Save</button>
-      <button class="btn ghost removeKey" type="button" ${status.set ? '' : 'disabled'}>Remove</button>
+      <input type="password" autocomplete="off" placeholder="Paste ${esc(c.name)} API key" title="Paste the ${esc(c.name)} API key stored locally on this machine" />
+      <button class="btn primary saveKey" type="button" title="Save this provider key locally">Save</button>
+      <button class="btn ghost removeKey" type="button" title="Remove this provider key" ${status.set ? '' : 'disabled'}>Remove</button>
     </div>`
       : '';
     return `<div class="connRow">
@@ -292,45 +464,44 @@ function renderContextSaverStatus(saver) {
     $('#contextSaverStatus').innerHTML = '';
     return;
   }
-  const headroomState = saver.headroomActive
-    ? 'Headroom active'
+  const hrState = saver.headroomActive
+    ? 'Active'
+    : saver.headroomConfigured && !saver.headroomReachable
+      ? 'Configured — proxy unavailable'
+      : saver.headroomInstalled
+        ? 'Installed — needs proxy/API key'
+        : 'Not installed (optional)';
+  const hrClass = saver.headroomActive ? 'set' : saver.headroomInstalled ? 'warn' : '';
+  const setupRows = saver.headroomActive
+    ? ''
     : saver.headroomInstalled
-      ? 'Headroom installed, needs proxy/API key'
-      : 'Using built-in saver';
-  const stateClass = saver.headroomActive ? 'set' : saver.headroomInstalled ? 'warn' : '';
+      ? `<span>Configure</span><code>HEADROOM_BASE_URL=http://localhost:8787</code>`
+      : `<span>Install</span><code>npm install headroom-ai</code><span>Proxy</span><code>headroom proxy --port 8787</code>`;
   $('#contextSaverStatus').innerHTML = `<div class="contextSaverTitle">Context Saver</div>
     <div class="contextSaverGrid">
-      <span>Current behavior</span><strong class="${stateClass}">${esc(headroomState)}</strong>
-      <span>Composer setting</span><strong>${esc(contextMode)}</strong>
-      <span>Optional install</span><code>npm install headroom-ai</code>
-      <span>Optional proxy</span><code>headroom proxy</code>
+      <span>Provider</span><strong>${esc(contextProvider)}</strong>
+      <span>Mode</span><strong>${esc(contextMode)}</strong>
+      <span>Headroom</span><strong class="${hrClass}">${esc(hrState)}</strong>
+      ${setupRows}
     </div>`;
 }
-function updateContextSaverBadge() {
-  const badge = $('#contextSaverBadge');
-  if (!badge) return;
-  badge.classList.remove('set', 'warn');
-  if (contextMode === 'off') {
-    badge.textContent = 'off';
-    badge.title = 'Context Saver is off';
-    return;
+function updateContextSaverUI() {
+  const provSel = $('#contextProvider');
+  if (!provSel) return;
+  const hrOpt = provSel.querySelector('option[value="headroom"]');
+  if (!hrOpt) return;
+  if (contextSaverInfo && !contextSaverInfo.headroomActive) {
+    hrOpt.textContent =
+      contextSaverInfo.headroomConfigured && !contextSaverInfo.headroomReachable
+        ? 'Headroom (proxy offline)'
+        : contextSaverInfo.headroomInstalled
+          ? 'Headroom (needs config)'
+          : 'Headroom (not installed)';
+  } else if (contextSaverInfo && contextSaverInfo.headroomActive) {
+    hrOpt.textContent = 'Headroom ✓';
+  } else {
+    hrOpt.textContent = 'Headroom';
   }
-  if (!contextSaverInfo) {
-    badge.textContent = 'checking';
-    badge.title = 'Checking Context Saver status';
-    return;
-  }
-  if (contextSaverInfo.headroomActive) {
-    badge.textContent = 'Headroom';
-    badge.classList.add('set');
-    badge.title = 'Headroom is active';
-    return;
-  }
-  badge.textContent = 'built-in';
-  badge.classList.add(contextSaverInfo.headroomInstalled ? 'warn' : '');
-  badge.title = contextSaverInfo.headroomInstalled
-    ? 'Headroom is installed but not configured. Open details.'
-    : 'Using built-in saver. Open details for Headroom setup.';
 }
 async function refreshContextSaverInfo() {
   try {
@@ -338,32 +509,7 @@ async function refreshContextSaverInfo() {
   } catch {
     contextSaverInfo = null;
   }
-  updateContextSaverBadge();
-}
-function contextSaverStateText() {
-  if (!contextSaverInfo) return 'Checking current status.';
-  if (contextMode === 'off') return 'Context Saver is off for new runs.';
-  if (contextSaverInfo.headroomActive) return 'Headroom is active for new runs.';
-  if (contextSaverInfo.headroomInstalled)
-    return 'Crew Forge is using the built-in saver. Headroom is installed but not configured.';
-  return 'Crew Forge is using the built-in saver. Headroom is not installed or configured.';
-}
-function openContextSaverInfo() {
-  const headroomActive = contextSaverInfo && contextSaverInfo.headroomActive;
-  $('#contextSaverInfoBody').innerHTML = `<h4>${esc(contextSaverStateText())}</h4>
-    <p><strong>Built-in saver</strong> ships with Crew Forge. It keeps recent turns, summarizes older turns, preserves touched-file hints, and caps context before each model call.</p>
-    <p><strong>Headroom</strong> is optional. Crew Forge can use it only when the optional package and proxy/API are configured for this app.</p>
-    <ul>
-      <li>Install optional package here: <code>npm install headroom-ai</code></li>
-      <li>Start the proxy separately: <code>headroom proxy</code></li>
-      <li>Set <code>HEADROOM_BASE_URL</code> or <code>HEADROOM_API_KEY</code>, then restart Crew Forge.</li>
-    </ul>
-    <p>Installing Headroom for Crew Forge does not automatically install or wrap Claude Code, Codex, or Grok outside this app. Use Headroom Desktop or Headroom wrapper setup if you want those tools covered globally.</p>
-    <p>${headroomActive ? 'The badge will show Headroom while that path is active.' : 'Until then, the badge shows built-in and Crew Forge uses its local saver.'}</p>`;
-  $('#contextSaverModal').classList.add('show');
-}
-function closeContextSaverInfo() {
-  $('#contextSaverModal').classList.remove('show');
+  updateContextSaverUI();
 }
 function openConnections() {
   $('#connectionsModal').classList.add('show');
@@ -405,9 +551,74 @@ async function removeKey(e) {
   if (r.error) return notify(r.error);
   await loadConnections();
 }
+async function exportProfile() {
+  try {
+    const response = await fetch('/api/profile/export');
+    if (!response.ok) throw new Error('export failed');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 10);
+    link.href = url;
+    link.download = `crewforge-profile-${stamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    notify('Profile backup exported.', 'info');
+  } catch {
+    notify('Unable to export local profile.');
+  }
+}
+async function importProfileFile(file) {
+  if (!file) return;
+  if (
+    !confirm(
+      'Import this Crew Forge profile backup? This replaces local workspaces, teams, custom skills, settings, and session history with the backup contents. Provider keys stay on this machine and are not imported.'
+    )
+  ) {
+    $('#profileImportFile').value = '';
+    return;
+  }
+  try {
+    const parsed = JSON.parse(await file.text());
+    const result = await api('/api/profile/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ profile: parsed }),
+    });
+    if (result.error) return notify(result.error);
+    profileLoaded = false;
+    await loadProfile();
+    await loadWorkspaces();
+    await loadTeams();
+    await loadSkills();
+    loadConnections();
+    updateSortBtn();
+    if (PROFILE_SETTINGS.provider && CAT.some((a) => a.id === PROFILE_SETTINGS.provider)) {
+      $('#provider').value = PROFILE_SETTINGS.provider;
+    }
+    $('#contextProvider').value = contextProvider;
+    $('#contextMode').value = contextMode;
+    populateComposerModels();
+    populateEffortOptions();
+    updateCaps();
+    notify(
+      `Profile imported: ${result.workspaces || 0} workspaces, ${result.teams || 0} teams, ${result.sessions || 0} sessions.`,
+      'info'
+    );
+  } catch {
+    notify('Unable to import this profile backup.');
+  } finally {
+    $('#profileImportFile').value = '';
+  }
+}
 $('#connectionsBtn').onclick = openConnections;
 $('#connectionsClose').onclick = closeConnections;
 $('#connectionsRefresh').onclick = loadConnections;
+$('#profileExport').onclick = exportProfile;
+$('#profileImport').onclick = () => $('#profileImportFile').click();
+$('#profileImportFile').onchange = () => importProfileFile($('#profileImportFile').files[0]);
 
 // ---------- onboarding ----------
 function openOnboarding(step = 0) {
@@ -440,8 +651,8 @@ function renderHealthRows() {
       const cmd = LOGIN_COMMANDS[p.id];
       const actions =
         p.kind === 'cli'
-          ? `<code>${esc(cmd || '')}</code><button class="btn ghost onboardCopy" type="button" data-copy="${esc(cmd || '')}">Copy</button>`
-          : `<button class="btn ghost onboardConnections" type="button">Open Connections</button>`;
+          ? `<code>${esc(cmd || '')}</code><button class="btn ghost onboardCopy" type="button" data-copy="${esc(cmd || '')}" title="Copy this setup command">Copy</button>`
+          : `<button class="btn ghost onboardConnections" type="button" title="Open provider connection settings">Open Connections</button>`;
       return `<div class="healthRow">
       <div class="healthIcon ${p.ready ? 'ok' : 'bad'}">${p.ready ? '✓' : '✗'}</div>
       <div>
@@ -465,14 +676,14 @@ function renderOnboarding() {
   } else if (onboardingStep === 1) {
     body = `<div class="onboardStep">Step 2 of 4</div>
       <h4>${titles[1]}</h4>
-      <p>Check which providers are ready on this machine. CLI providers need their tools installed and signed in; Gemini needs an API key.</p>
-      <div class="row" style="margin:0 0 10px"><button class="btn ghost" id="onboardingRefresh" type="button">Refresh</button></div>
+      <p>Check which providers are ready on this machine. CLI providers, including Antigravity, need their tools installed and signed in. The older Gemini API adapter needs an API key.</p>
+      <div class="row" style="margin:0 0 10px"><button class="btn ghost" id="onboardingRefresh" type="button" title="Refresh provider readiness">Refresh</button></div>
       ${renderHealthRows()}`;
   } else if (onboardingStep === 2) {
     body = `<div class="onboardStep">Step 3 of 4</div>
       <h4>${titles[2]}</h4>
       <p>Add the folder you want this app to work in. Choose a trusted project folder, especially before using Edit mode.</p>
-      <button class="btn primary" id="onboardingAddWorkspace" type="button">Add workspace</button>`;
+      <button class="btn primary" id="onboardingAddWorkspace" type="button" title="Choose a local project folder">Add workspace</button>`;
   } else {
     body = `<div class="onboardStep">Step 4 of 4</div>
       <h4>${titles[3]}</h4>
@@ -538,6 +749,7 @@ function sortSessions(list) {
 $('#sessSort').onclick = () => {
   sessionSort = sessionSort === 'newest' ? 'oldest' : 'newest';
   localStorage.setItem(SESSION_SORT_KEY, sessionSort);
+  saveProfileSettings({ sessionSort });
   updateSortBtn();
   loadSessions();
 };
@@ -677,13 +889,183 @@ function switchRightTab(name) {
   localStorage.setItem(RIGHT_TAB_KEY, name);
 }
 document.querySelectorAll('.panelTab').forEach((btn) => {
-  btn.onclick = () => switchRightTab(btn.dataset.tab);
+  btn.onclick = () => {
+    switchRightTab(btn.dataset.tab);
+    if (btn.dataset.tab === 'tasks') loadTasksPanel();
+  };
 });
 (function initRightTab() {
   const saved = localStorage.getItem(RIGHT_TAB_KEY);
-  if (saved && ['files', 'terminal', 'preview', 'changes', 'usage'].includes(saved))
+  if (saved && ['files', 'terminal', 'preview', 'changes', 'tasks', 'usage'].includes(saved))
     switchRightTab(saved);
 })();
+
+// ---------- task tracker (right panel) ----------
+const tasksUi = { projectId: null, selectedTaskId: null, loading: false, error: '' };
+
+function taskStatusLabel(status) {
+  return String(status || 'unknown').replace(/_/g, ' ');
+}
+
+function renderTaskCounts(counts) {
+  if (!counts || !Object.keys(counts).length) return '';
+  return (
+    '<div class="tasksCounts">' +
+    Object.entries(counts)
+      .map(
+        ([status, n]) =>
+          `<span class="tasksCount">${esc(taskStatusLabel(status))}: ${esc(String(n))}</span>`
+      )
+      .join('') +
+    '</div>'
+  );
+}
+
+function renderTasksList(tasks) {
+  const list = $('#tasksList');
+  if (!tasks || !tasks.length) {
+    list.innerHTML = '';
+    return;
+  }
+  list.innerHTML = tasks
+    .map((task) => {
+      const on = task.id === tasksUi.selectedTaskId ? ' on' : '';
+      const deps = (task.dependencies || []).length
+        ? `deps: ${task.dependencies.length}`
+        : 'no deps';
+      return `<button type="button" class="taskRow${on}" data-task-id="${esc(task.id)}">
+        <div class="taskRowTop">
+          <span class="taskRowTitle">${esc(task.title)}</span>
+          <span class="taskStatus ${esc(task.status)}">${esc(taskStatusLabel(task.status))}</span>
+        </div>
+        <div class="taskRowMeta">${esc(task.owner || '')} · attempt ${esc(String(task.attempts || 0))} · ${esc(deps)}</div>
+      </button>`;
+    })
+    .join('');
+  list.querySelectorAll('.taskRow').forEach((row) => {
+    row.onclick = () => selectTrackedTask(row.dataset.taskId);
+  });
+}
+
+function renderTaskDetail(task) {
+  const box = $('#tasksDetail');
+  if (!task) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.classList.remove('hidden');
+  const criteria = (task.acceptanceCriteria || []).length
+    ? `<ul>${task.acceptanceCriteria.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`
+    : '<span class="muted">—</span>';
+  const evidence = (task.evidence || [])
+    .slice(-6)
+    .map((e) => JSON.stringify(e, null, 2))
+    .join('\n\n');
+  box.innerHTML =
+    `<h3>${esc(task.title)}</h3>` +
+    `<dl>
+      <dt>Status</dt><dd>${esc(taskStatusLabel(task.status))}${task.statusReason ? ' — ' + esc(task.statusReason) : ''}</dd>
+      <dt>Objective</dt><dd>${esc(task.objective || '')}</dd>
+      <dt>Owner</dt><dd>${esc(task.owner || '')}</dd>
+      <dt>Model</dt><dd>${esc(task.model || '—')}</dd>
+      <dt>Mode</dt><dd>${esc(task.mode || '')}</dd>
+      <dt>Attempts</dt><dd>${esc(String(task.attempts || 0))}</dd>
+      <dt>Updated</dt><dd>${esc(task.updatedAt || '')}</dd>
+      <dt>Worktree</dt><dd>${esc(task.worktreeId || '—')}</dd>
+      <dt>Acceptance</dt><dd>${criteria}</dd>
+    </dl>` +
+    (evidence
+      ? `<div class="tasksEvidence"><strong>Recent evidence</strong><pre>${esc(evidence)}</pre></div>`
+      : '');
+}
+
+async function loadTasksPanel() {
+  if (!state.ws || !state.sid) {
+    $('#tasksSummary').innerHTML = '<div class="tasksEmpty">Select a workspace and session.</div>';
+    $('#tasksList').innerHTML = '';
+    renderTaskDetail(null);
+    return;
+  }
+  const uiSnapshot = { ...tasksUi, loading: true, error: '' };
+  Object.assign(tasksUi, uiSnapshot);
+  $('#tasksSummary').innerHTML = '<div class="tasksEmpty">Loading…</div>';
+  let nextProjectId = uiSnapshot.projectId;
+  let nextSelectedTaskId = uiSnapshot.selectedTaskId;
+  try {
+    let projectId = nextProjectId;
+    if (!projectId) {
+      const listed = await api(
+        `/api/projects?ws=${encodeURIComponent(state.ws)}&sid=${encodeURIComponent(state.sid)}`
+      );
+      const first = (listed.projects || [])[0];
+      projectId = (first && first.project && first.project.id) || null;
+      nextProjectId = projectId;
+    }
+    if (!projectId) {
+      $('#tasksSummary').innerHTML =
+        '<div class="tasksEmpty">No tracked project for this session yet. Delegate to a team to create one.</div>';
+      $('#tasksList').innerHTML = '';
+      renderTaskDetail(null);
+      return;
+    }
+    const detail = await api(
+      `/api/projects/detail?ws=${encodeURIComponent(state.ws)}&sid=${encodeURIComponent(state.sid)}&projectId=${encodeURIComponent(projectId)}`
+    );
+    const project = detail.project || {};
+    const counts = detail.counts || {};
+    const done = (counts.done || 0) + (counts.complete || 0) + (counts.approved || 0);
+    const total = (detail.tasks || []).length;
+    $('#tasksSummary').innerHTML =
+      `<div><strong>${esc(project.objective || 'Team objective')}</strong></div>` +
+      `<div class="muted">Project ${esc(project.id || '')} · ${esc(String(done))}/${esc(String(total))} done · phase ${esc(project.phase || '')}</div>` +
+      renderTaskCounts(counts);
+    renderTasksList(detail.tasks || []);
+    const selected =
+      (detail.tasks || []).find((t) => t.id === nextSelectedTaskId) ||
+      (detail.tasks || [])[0] ||
+      null;
+    if (selected) {
+      nextSelectedTaskId = selected.id;
+      const taskRes = await api(
+        `/api/tasks/detail?ws=${encodeURIComponent(state.ws)}&sid=${encodeURIComponent(state.sid)}&projectId=${encodeURIComponent(projectId)}&taskId=${encodeURIComponent(selected.id)}`
+      );
+      renderTaskDetail(taskRes.task || selected);
+      renderTasksList(detail.tasks || []);
+    } else {
+      renderTaskDetail(null);
+    }
+  } catch (_e) {
+    $('#tasksSummary').innerHTML =
+      '<div class="tasksEmpty">Unable to load task tracker. Try Refresh.</div>';
+  } finally {
+    Object.assign(tasksUi, {
+      projectId: nextProjectId,
+      selectedTaskId: nextSelectedTaskId,
+      loading: false,
+    });
+  }
+}
+
+function selectTrackedTask(taskId) {
+  tasksUi.selectedTaskId = taskId;
+  loadTasksPanel();
+}
+
+$('#tasksRefresh').onclick = () => {
+  tasksUi.projectId = null;
+  loadTasksPanel();
+};
+
+let tasksRefreshTimer = null;
+function scheduleTasksRefresh() {
+  if (tasksRefreshTimer) return;
+  tasksRefreshTimer = setTimeout(() => {
+    tasksRefreshTimer = null;
+    const tab = document.querySelector('.panelTab.on');
+    if (tab && tab.dataset.tab === 'tasks') loadTasksPanel();
+  }, 400);
+}
 
 // ---------- file explorer ----------
 const fileExplorer = { root: null, current: null, data: null, filter: '' };
@@ -731,6 +1113,7 @@ async function openWsFiles(rootPath, navPath) {
     $('#fileTree').innerHTML = '<div class="actEmpty">No workspace selected.</div>';
     $('#filePanePath').textContent = '';
     $('#filePaneUp').disabled = true;
+    closeFilePreview();
     return;
   }
   $('#fileTree').innerHTML = '<div class="actEmpty">Loading…</div>';
@@ -783,7 +1166,7 @@ function renderFileTree(d) {
   const fileHtml = files
     .map(
       (x) =>
-        `<button type="button" class="fileEntry file" data-path="${esc(x.path)}" title="Click to copy path: ${esc(x.name)}">` +
+        `<button type="button" class="fileEntry file" data-path="${esc(x.path)}" title="Open read-only preview: ${esc(x.name)}">` +
         `<span class="fileIcon" aria-hidden="true">${esc(fileIcon(x.name))}</span>` +
         `<span class="fileName">${esc(x.name)}</span>` +
         `</button>`
@@ -799,25 +1182,7 @@ function renderFileTree(d) {
   $('#fileTree')
     .querySelectorAll('.fileEntry.file')
     .forEach((btn) => {
-      btn.onclick = async () => {
-        const rel = fileExplorer.root
-          ? btn.dataset.path.replace(fileExplorer.root, '').replace(/^[/\\]/, '')
-          : btn.dataset.path;
-        const inChanges = (activity.changedFiles || []).find((f) => f.path === rel);
-        if (inChanges) {
-          switchRightTab('changes');
-          activity.selected = inChanges.path;
-          if (activity.lastChanges) renderChanges(activity.lastChanges);
-          loadDiff(inChanges.path);
-          return;
-        }
-        try {
-          await navigator.clipboard.writeText(rel);
-          notify(`Copied: ${rel}`, 'info');
-        } catch (_e) {
-          notify(`Copy failed — ${rel}`, 'info');
-        }
-      };
+      btn.onclick = () => openFilePreview(btn.dataset.path);
     });
   if (d.truncated) {
     $('#fileTree').insertAdjacentHTML(
@@ -827,6 +1192,38 @@ function renderFileTree(d) {
   }
 }
 
+async function openFilePreview(filePath) {
+  if (!state.ws || !filePath) return;
+  const viewer = $('#fileViewer');
+  viewer.classList.remove('hidden');
+  $('#fileViewerTitle').textContent = 'Loading...';
+  $('#fileViewerBody').textContent = '';
+  $('#fileViewerCopy').dataset.path = filePath;
+  try {
+    const d = await api(
+      '/api/file?ws=' + encodeURIComponent(state.ws) + '&path=' + encodeURIComponent(filePath)
+    );
+    if (d.error) {
+      $('#fileViewerTitle').textContent = d.path || filePath;
+      $('#fileViewerBody').textContent = d.error;
+      return;
+    }
+    $('#fileViewerTitle').textContent = d.relativePath || d.name || filePath;
+    $('#fileViewerCopy').dataset.path = d.path || filePath;
+    $('#fileViewerBody').textContent = d.content || '';
+  } catch (_e) {
+    $('#fileViewerTitle').textContent = filePath;
+    $('#fileViewerBody').textContent = 'Unable to open file.';
+  }
+}
+
+function closeFilePreview() {
+  $('#fileViewer').classList.add('hidden');
+  $('#fileViewerTitle').textContent = 'No file selected';
+  $('#fileViewerBody').textContent = '';
+  $('#fileViewerCopy').dataset.path = '';
+}
+
 $('#filePaneUp').onclick = () => {
   if (!fileExplorer.data || !fileExplorer.data.parent) return;
   if (fileExplorer.current === fileExplorer.root) return;
@@ -834,6 +1231,17 @@ $('#filePaneUp').onclick = () => {
 };
 $('#fileRefresh').onclick = () => {
   if (fileExplorer.root) openWsFiles(fileExplorer.root, fileExplorer.current);
+};
+$('#fileViewerClose').onclick = closeFilePreview;
+$('#fileViewerCopy').onclick = async () => {
+  const filePath = $('#fileViewerCopy').dataset.path;
+  if (!filePath) return;
+  try {
+    await navigator.clipboard.writeText(filePath);
+    notify('Copied file path.', 'info');
+  } catch (_e) {
+    notify('Unable to copy file path.', 'info');
+  }
 };
 
 // ---------- dev server runner ----------
@@ -981,9 +1389,26 @@ $('#agentLogToggle').onclick = () => {
 };
 
 // ---------- preview pane ----------
+// Only allow previewing local dev servers — blocks javascript:/data: URIs and
+// arbitrary remote hosts that could phish or escape the sandbox.
+function isAllowedPreviewUrl(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]';
+}
 function loadPreview() {
   const url = $('#previewUrl').value.trim();
   if (!url) return;
+  if (!isAllowedPreviewUrl(url)) {
+    $('#previewExternal').href = '#';
+    notify('Preview only supports local URLs (http://localhost:* or 127.0.0.1:*).');
+    return;
+  }
   $('#previewFrame').src = url;
   $('#previewExternal').href = url;
 }
@@ -993,7 +1418,8 @@ $('#previewUrl').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') loadPreview();
 });
 $('#previewUrl').addEventListener('input', () => {
-  $('#previewExternal').href = $('#previewUrl').value.trim() || '#';
+  // Keep the external link inert until Load validates and applies the local URL.
+  $('#previewExternal').href = '#';
 });
 $('#fileFilter').oninput = () => {
   fileExplorer.filter = $('#fileFilter').value.trim().toLowerCase();
@@ -1001,35 +1427,110 @@ $('#fileFilter').oninput = () => {
 };
 
 // ---------- bootstrap ----------
-(async () => {
-  CAT = await api('/api/catalog');
-  await loadSkills();
+function renderProviderOptions() {
   $('#provider').innerHTML = CAT.map(
     (a) =>
       `<option value="${a.id}" data-edit="${a.canEdit}">${esc(a.label)}${a.canEdit ? '' : ' (text only)'}</option>`
   ).join('');
+}
+
+async function refreshModelCatalog() {
+  const button = $('#refreshModels');
+  const selectedProviderId = $('#provider').value;
+  const selectedModel = $('#model').value;
+  button.disabled = true;
+  button.classList.add('loading');
+  try {
+    CAT = await api('/api/catalog/refresh');
+    renderProviderOptions();
+    if (selectedProviderId && CAT.some((a) => a.id === selectedProviderId)) {
+      $('#provider').value = selectedProviderId;
+    }
+    populateComposerModels(selectedModel);
+    populateEffortOptions();
+    populateReviewModels();
+    refreshTeamModelSelects();
+    updateCaps();
+    notify('Model list refreshed from local CLIs.', 'info');
+  } catch {
+    notify('Unable to refresh models from local CLIs.');
+  } finally {
+    button.disabled = false;
+    button.classList.remove('loading');
+  }
+}
+
+(async () => {
+  CAT = await api('/api/catalog');
+  await loadProfile();
+  await loadSkills();
+  renderProviderOptions();
+  if (PROFILE_SETTINGS.provider && CAT.some((a) => a.id === PROFILE_SETTINGS.provider)) {
+    $('#provider').value = PROFILE_SETTINGS.provider;
+  }
   $('#provider').onchange = () => {
     populateComposerModels();
+    saveProfileSettings({ provider: $('#provider').value, model: $('#model').value });
+    populateEffortOptions();
     updateCaps();
     populateReviewModels();
   };
-  $('#model').onchange = updateCaps;
+  $('#model').onchange = () => {
+    saveProfileSettings({ provider: $('#provider').value, model: $('#model').value });
+    populateEffortOptions();
+    updateCaps();
+  };
+  $('#effort').onchange = () => {
+    directEffort = $('#effort').value;
+    localStorage.setItem(EFFORT_KEY, directEffort);
+    saveProfileSettings({ directEffort });
+    updateCaps();
+  };
+  $('#refreshModels').onclick = refreshModelCatalog;
+  $('#contextProvider').value = contextProvider;
+  $('#contextProvider').onchange = () => {
+    contextProvider = $('#contextProvider').value;
+    localStorage.setItem(CONTEXT_PROVIDER_KEY, contextProvider);
+    saveProfileSettings({ contextProvider });
+    if (contextProvider === 'headroom' && contextSaverInfo && !contextSaverInfo.headroomActive) {
+      notify(
+        contextSaverInfo.headroomConfigured && !contextSaverInfo.headroomReachable
+          ? 'Headroom is configured, but the proxy is not reachable. Built-in context saver will be used.'
+          : contextSaverInfo.headroomInstalled
+            ? 'Headroom is installed but needs configuration. Open Connections for details.'
+            : 'Headroom is not installed. Open Connections for setup steps.',
+        'warn'
+      );
+    }
+  };
   $('#contextMode').value = contextMode;
   $('#contextMode').onchange = () => {
     contextMode = $('#contextMode').value;
     localStorage.setItem(CONTEXT_MODE_KEY, contextMode);
-    updateContextSaverBadge();
-    if (contextMode !== 'off' && contextSaverInfo && !contextSaverInfo.headroomActive) {
-      notify('Using built-in Context Saver. Open Connections for Headroom install steps.', 'warn');
-    }
+    saveProfileSettings({ contextMode });
   };
-  $('#contextSaverBadge').onclick = openContextSaverInfo;
-  $('#contextSaverClose').onclick = closeContextSaverInfo;
-  $('#contextSaverOpenConnections').onclick = () => {
-    closeContextSaverInfo();
-    openConnections();
-  };
-  populateComposerModels();
+  $('#topStop').onclick = stopRun;
+  $('#themeToggle').onclick = toggleTheme;
+  const advToggle = $('#advToggle');
+  if (advToggle)
+    advToggle.onclick = () => {
+      const adv = $('#advancedControls');
+      const show = adv.hasAttribute('hidden');
+      if (show) adv.removeAttribute('hidden');
+      else adv.setAttribute('hidden', '');
+      advToggle.setAttribute('aria-expanded', String(show));
+      advToggle.classList.toggle('on', show);
+      advToggle.textContent = show ? 'Hide context settings' : 'Context settings';
+      advToggle.title = show ? 'Hide context saver settings' : 'Show context saver settings';
+    };
+  $('#themeToggle').textContent = currentTheme === 'light' ? '☽' : '☀';
+  const slider = $('#fontSizeSlider');
+  if (slider) {
+    slider.value = currentFontSize;
+    slider.oninput = () => applyFontSize(Number(slider.value));
+  }
+  populateComposerModels(PROFILE_SETTINGS.model);
+  populateEffortOptions();
   updateCaps();
   populateReviewModels();
   await loadWorkspaces();
@@ -1037,13 +1538,19 @@ $('#fileFilter').oninput = () => {
   loadUsage();
   refreshContextSaverInfo();
   setInterval(loadUsage, 10000);
+  // Load provider readiness so the first-run checklist + Send-gating are accurate.
+  loadOnboardingHealth().then(() => {
+    refreshEmptyState();
+    updateCaps();
+    renderPreflight();
+  });
   if (!localStorage.getItem(ONBOARD_KEY)) openOnboarding();
 })();
 
 function selectedProvider() {
   return CAT.find((x) => x.id === $('#provider').value);
 }
-function populateComposerModels() {
+function populateComposerModels(preferredModel) {
   const a = selectedProvider();
   if (!a) {
     $('#model').innerHTML = '';
@@ -1053,26 +1560,230 @@ function populateComposerModels() {
     .map((m) => `<option value="${esc(m)}">${esc(m)}</option>`)
     .join('');
   if (a.defaultModel) $('#model').value = a.defaultModel;
+  const wanted = preferredModel || PROFILE_SETTINGS.model;
+  if (wanted && (a.models || []).includes(wanted)) {
+    $('#model').value = wanted;
+  }
+}
+function effortLabel(level) {
+  const labels = {
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    xhigh: 'Extra high',
+    max: 'Max',
+  };
+  return labels[level] || level;
+}
+function modelEffortLevels() {
+  const a = selectedProvider();
+  if (!a) return [];
+  const model = $('#model').value;
+  if (a.modelEffortLevels && model && model in a.modelEffortLevels)
+    return a.modelEffortLevels[model];
+  return a.effortLevels || [];
+}
+function populateEffortOptions() {
+  const sel = $('#effort');
+  const levels = modelEffortLevels();
+  if (!levels.length) {
+    sel.innerHTML = '<option value="">Effort: Default</option>';
+    sel.value = '';
+    sel.disabled = true;
+    sel.title = 'This model does not expose an effort setting in Crew Forge yet';
+    return;
+  }
+  sel.disabled = false;
+  sel.title = 'Choose reasoning effort for this direct run';
+  sel.innerHTML =
+    '<option value="">Effort: Default</option>' +
+    levels
+      .map((level) => `<option value="${esc(level)}">Effort: ${esc(effortLabel(level))}</option>`)
+      .join('');
+  sel.value = levels.includes(directEffort) ? directEffort : '';
+}
+function providerReadiness(id) {
+  if (!Array.isArray(onboardingHealth)) return null;
+  return onboardingHealth.find((p) => p.id === id) || null;
+}
+function providerReadyLabel(id) {
+  const h = providerReadiness(id);
+  if (!h) return { status: 'warn', text: `${id}: readiness unknown` };
+  return h.ready
+    ? { status: 'ok', text: `${id}: ready` }
+    : { status: 'bad', text: `${id}: setup needed` };
+}
+function preflightItems() {
+  const items = [];
+  const workspace = state.wsPath || '';
+  items.push(
+    state.ws
+      ? { status: 'ok', text: `Workspace: ${$('#wsName').textContent || 'selected'}` }
+      : { status: 'bad', text: 'No workspace selected' }
+  );
+  if (state.ws) {
+    if (activity.notRepo) {
+      items.push(
+        state.mode === 'edit'
+          ? { status: 'bad', text: 'Non-Git workspace: Plan only' }
+          : { status: 'warn', text: 'Non-Git workspace: Plan/read-only only' }
+      );
+    } else {
+      items.push({ status: 'ok', text: 'Git workspace ready' });
+    }
+  }
+  const a = selectedProvider();
+  if (a) {
+    items.push(providerReadyLabel(a.id));
+    items.push({
+      status: state.mode === 'edit' && !a.canEdit ? 'bad' : 'ok',
+      text: `${state.mode === 'edit' ? 'Edit' : 'Plan'} mode${a.canEdit ? '' : ' · text-only provider'}`,
+    });
+  }
+  const team = activeTeam && activeTeam();
+  if (team && team.members && team.members.length) {
+    const providers = [...new Set(team.members.map((m) => m.adapter).filter(Boolean))];
+    const unavailable = providers.filter((id) => {
+      const h = providerReadiness(id);
+      return h && !h.ready;
+    });
+    if (unavailable.length)
+      items.push({ status: 'bad', text: `Team blocked: ${unavailable.join(', ')} setup needed` });
+    else items.push({ status: 'ok', text: `Team: ${team.members.length} seats` });
+  }
+  if (workspace) items.push({ status: 'info', text: workspace });
+  return items;
+}
+function renderPreflight() {
+  const bar = $('#preflightBar');
+  if (!bar) return;
+  const items = preflightItems();
+  const worst = items.some((x) => x.status === 'bad')
+    ? 'bad'
+    : items.some((x) => x.status === 'warn')
+      ? 'warn'
+      : 'ok';
+  bar.className = `preflightBar ${worst}`;
+  bar.innerHTML = items
+    .map((item) => `<span class="preflightChip ${item.status}">${esc(item.text)}</span>`)
+    .join('');
 }
 function updateCaps() {
   const a = selectedProvider();
-  $('#caps').textContent = a ? `models: ${a.models.join(', ')}` : '';
+  const caps = $('#caps');
+  if (a) {
+    const h = providerReadiness(a.id);
+    let badge = '';
+    if (h)
+      badge = h.ready
+        ? ' · <span class="provReady">● ready</span>'
+        : ' · <span class="provNotReady">● needs setup</span>';
+    const effortText = modelEffortLevels().length
+      ? ` · effort: ${esc($('#effort').value || 'default')}`
+      : '';
+    const sourceText = a.modelSource ? ` · ${esc(a.modelSource)}` : '';
+    caps.innerHTML = `models: ${esc(a.models.join(', '))}${effortText}${sourceText}${badge}`;
+  } else {
+    caps.textContent = '';
+  }
   const editBtn = $('#mode').querySelector('[data-m=edit]');
-  if (a && !a.canEdit) {
+  // Disable Edit when the model can't edit, OR when the workspace isn't a git repo
+  // (edits would be unreviewable / unrecoverable without version control).
+  const notRepo = !!(state.ws && activity.notRepo);
+  const blockEdit = (a && !a.canEdit) || notRepo;
+  if (blockEdit) {
     editBtn.disabled = true;
     editBtn.style.opacity = 0.4;
+    editBtn.title = notRepo
+      ? 'Edit needs a git repo so changes are reviewable/recoverable. This folder isn’t one — Plan mode only.'
+      : `${a ? a.id : 'This model'} is read-only (cannot edit files).`;
     if (state.mode === 'edit') setMode('plan');
   } else {
     editBtn.disabled = false;
     editBtn.style.opacity = 1;
+    editBtn.title = '';
   }
+  renderPreflight();
 }
 function setMode(m) {
   state.mode = m;
   $('#mode')
     .querySelectorAll('button')
     .forEach((b) => b.classList.toggle('on', b.dataset.m === m));
+  renderPreflight();
 }
+
+// ---------- first-run readiness ----------
+// True once we know at least one provider is authenticated/ready.
+function anyProviderReady() {
+  return Array.isArray(onboardingHealth) && onboardingHealth.some((p) => p && p.ready);
+}
+// Health may not be loaded yet; treat unknown as "don't block" so we never
+// falsely lock out a user whose providers are actually fine.
+function providersKnown() {
+  return Array.isArray(onboardingHealth);
+}
+function firstBlocker() {
+  if (providersKnown() && !anyProviderReady())
+    return {
+      reason: 'Connect a model first — open Connections (⚙) and sign in to a provider.',
+      action: 'connections',
+    };
+  if (!state.ws)
+    return { reason: 'Add a workspace folder to begin (＋ Add folder).', action: 'workspace' };
+  const a = selectedProvider();
+  const h = a && providerReadiness(a.id);
+  if (providersKnown() && h && !h.ready)
+    return {
+      reason: `${a.label || a.id} needs setup before it can run. Open Connections for setup steps.`,
+      action: 'connections',
+    };
+  return null;
+}
+function teamBlocker(team) {
+  if (!team || !team.members || !team.members.length) return 'Select a team first';
+  if (providersKnown()) {
+    const unavailable = [...new Set(team.members.map((m) => m.adapter).filter(Boolean))].filter(
+      (id) => {
+        const h = providerReadiness(id);
+        return h && !h.ready;
+      }
+    );
+    if (unavailable.length)
+      return `Team provider setup needed before delegation: ${unavailable.join(', ')}`;
+  }
+  return '';
+}
+function checklistRow(done, label, hint, action) {
+  const tag = action && !done ? 'button' : 'div';
+  const attrs = action && !done ? ` type="button" data-check="${action}"` : '';
+  return `<${tag} class="checkRow ${done ? 'done' : ''}${action && !done ? ' actionable' : ''}"${attrs}><span class="checkMark">${done ? '✓' : '○'}</span><div><div class="checkLabel">${label}${action && !done ? ' <span class="checkGo">→</span>' : ''}</div>${hint ? `<div class="checkHint">${hint}</div>` : ''}</div></${tag}>`;
+}
+function emptyStateHtml() {
+  const provDone = anyProviderReady();
+  const wsDone = !!state.ws;
+  const notRepo = wsDone && activity.notRepo;
+  return `<div class="firstRun">
+    <h2>Welcome to Crew Forge</h2>
+    <p class="firstRunSub">Run AI coding models against a local folder — solo or as a delegated team. Three steps to your first run:</p>
+    ${checklistRow(provDone, 'Connect a model', provDone ? 'A provider is signed in and ready.' : 'Click here to open Connections and sign in to Claude, Codex, or Grok.', 'connect')}
+    ${checklistRow(wsDone, 'Pick a workspace', wsDone ? 'Working in this folder.' : 'Click here to add a folder. Tip: choose a git repo so Edit, diffs, review, and teams all work.', 'workspace')}
+    ${checklistRow(false, 'Send your first prompt', notRepo ? 'Heads-up: this folder isn’t a git repo, so Edit / diff / review and team approval are limited. Plan mode and team planning still work.' : 'Plan mode is read-only and safe. Switch to Edit to let the model change files.')}
+  </div>`;
+}
+function refreshEmptyState() {
+  const feed = $('#feed');
+  if (feed && feed.querySelector('.empty, .firstRun') && !feed.querySelector('.turn, .status'))
+    feed.innerHTML = emptyStateHtml();
+}
+// Delegated handler so the checklist rows act as buttons.
+document.addEventListener('click', (e) => {
+  const row = e.target.closest && e.target.closest('[data-check]');
+  if (!row) return;
+  const action = row.dataset.check;
+  if (action === 'connect') openConnections();
+  else if (action === 'workspace') $('#addWs') && $('#addWs').click();
+});
 $('#mode')
   .querySelectorAll('button')
   .forEach((b) => (b.onclick = () => !b.disabled && setMode(b.dataset.m)));
@@ -1086,7 +1797,12 @@ async function loadWorkspaces() {
     '<option value="">— none —</option>';
   $('#forgetWs').disabled = !list.length;
   if (list.length) {
-    const next = state.ws && list.some((w) => w.id === state.ws) ? state.ws : list[0].id;
+    const savedWs =
+      PROFILE_SETTINGS.selectedWorkspaceId &&
+      list.some((w) => w.id === PROFILE_SETTINGS.selectedWorkspaceId)
+        ? PROFILE_SETTINGS.selectedWorkspaceId
+        : null;
+    const next = state.ws && list.some((w) => w.id === state.ws) ? state.ws : savedWs || list[0].id;
     $('#ws').value = next;
     selectWs(next, list);
     return;
@@ -1108,28 +1824,38 @@ function clearWorkspace() {
   $('#wsPath').textContent = 'pick or add a folder to begin';
   $('#sessList').innerHTML =
     '<div style="color:var(--muted);padding:10px;font-size:12px">No workspace selected.</div>';
-  $('#feed').innerHTML =
-    '<div class="empty">Pick a workspace and a model, then send a message to watch it work.</div>';
+  $('#feed').innerHTML = emptyStateHtml();
   $('#actState').textContent = 'Idle';
   $('#actFiles').innerHTML = '<div class="actEmpty">No workspace selected.</div>';
   $('#actStat').textContent = '';
   $('#diffTitle').textContent = 'Diff';
   $('#diffOut').textContent = 'Select a changed file or refresh the diff.';
   $('#forgetWs').disabled = true;
+  renderPreflight();
 }
 async function selectWs(id, list) {
   list = list || (await api('/api/workspaces'));
   const w = list.find((x) => x.id === id);
   if (!w) return;
+  const changed = state.ws !== id;
   state.ws = id;
   state.wsPath = w.path;
+  if (changed) state.sid = null;
   $('#wsName').textContent = w.name;
   $('#wsPath').textContent = w.path;
+  saveProfileSettings({ selectedWorkspaceId: id, selectedSessionId: state.sid || '' });
   activity.selected = null;
   openWsFiles(w.path);
   syncDevStatus();
   await loadChanges();
-  await loadSessions();
+  const sessions = await loadSessions();
+  const savedSession =
+    PROFILE_SETTINGS.selectedWorkspaceId === id &&
+    PROFILE_SETTINGS.selectedSessionId &&
+    sessions.some((s) => s.id === PROFILE_SETTINGS.selectedSessionId)
+      ? PROFILE_SETTINGS.selectedSessionId
+      : null;
+  if (!state.sid && savedSession) openSession(savedSession);
 }
 async function forgetWorkspace() {
   if (!state.ws) return;
@@ -1164,6 +1890,7 @@ async function loadSessions() {
   $('#sessList')
     .querySelectorAll('.sess')
     .forEach((d) => (d.onclick = () => openSession(d.dataset.id)));
+  return list;
 }
 $('#newSess').onclick = async () => {
   if (!state.ws) return notify('Add a workspace first');
@@ -1179,6 +1906,9 @@ $('#newSess').onclick = async () => {
 // ---------- session stream ----------
 function openSession(sid) {
   state.sid = sid;
+  tasksUi.projectId = null;
+  tasksUi.selectedTaskId = null;
+  saveProfileSettings({ selectedWorkspaceId: state.ws, selectedSessionId: sid });
   live = {};
   setRunActive(false);
   $('#feed').innerHTML = '';
@@ -1186,7 +1916,9 @@ function openSession(sid) {
   loadSessions();
   stopActivityPoll();
   if (state.es) state.es.close();
-  const es = new EventSource(`/api/stream?ws=${state.ws}&sid=${sid}&off=0`);
+  const es = new EventSource(
+    `/api/stream?ws=${encodeURIComponent(state.ws)}&sid=${encodeURIComponent(sid)}&off=0`
+  );
   state.es = es;
   es.onmessage = (ev) => {
     try {
@@ -1205,7 +1937,7 @@ function scrollFeed() {
 function bubble(actor, role, cls, html) {
   const left = actor !== 'user';
   return `<div class="turn ${left ? 'left' : 'user'}"><div class="av" style="background:${COLOR[actor] || 'var(--user)'}">${AV[actor] || '?'}</div>
-    <div class="bubble ${cls}"><div class="who" style="color:${COLOR[actor] || 'var(--text)'}">${actor}${role && role !== 'agent' ? `<span class="role">${role}</span>` : ''}</div>${html}</div></div>`;
+    <div class="bubble ${cls}"><div class="who" style="color:${COLOR[actor] || 'var(--text)'}">${esc(actor)}${role && role !== 'agent' ? `<span class="role">${esc(role)}</span>` : ''}</div>${html}</div></div>`;
 }
 function appendHTML(h) {
   feedEl().insertAdjacentHTML('beforeend', h);
@@ -1225,7 +1957,7 @@ function showRateLimitBanner(actor) {
     banner.className = 'rateBanner';
     inner.insertBefore(banner, inner.firstChild);
   }
-  banner.innerHTML = `<span>⚠ ${esc(actor)} hit a usage/rate limit — switch models or wait.</span><button class="rateBannerDismiss" type="button" aria-label="Dismiss">✕</button>`;
+  banner.innerHTML = `<span>⚠ ${esc(actor)} hit a usage/rate limit — switch models or wait.</span><button class="rateBannerDismiss" type="button" aria-label="Dismiss" title="Dismiss rate-limit warning">✕</button>`;
   banner.querySelector('.rateBannerDismiss').onclick = () => banner.remove();
 }
 
@@ -1235,6 +1967,210 @@ function maybeRateLimitError(actor, text) {
   showRateLimitBanner(actor);
   loadUsage();
   return true;
+}
+
+function diffSummaryLine(meta) {
+  const s = (meta && meta.diffSummary) || {};
+  const parts = [];
+  if (s.fileCount) parts.push(`${s.fileCount} file${s.fileCount === 1 ? '' : 's'}`);
+  if (s.insertions || s.deletions) parts.push(`+${s.insertions || 0} / -${s.deletions || 0}`);
+  if (s.hasBinary) parts.push('binary');
+  if (s.empty) parts.push('no textual diff');
+  return parts.join(' · ') || 'Changed files pending review';
+}
+
+function showPendingWorktreeDiff(worktreeId, meta) {
+  switchRightTab('changes');
+  const step =
+    meta && meta.step && meta.total ? `Step ${meta.step}/${meta.total}` : 'Pending integration';
+  $('#diffTitle').textContent = `${step} · ${worktreeId || 'worktree'}`;
+  const diff = (meta && meta.diff) || '';
+  if (diff) {
+    renderDiff(diff);
+    return;
+  }
+  $('#diffOut').innerHTML = '<span class="meta">Loading diff...</span>';
+  api(
+    `/api/worktree/pending?ws=${encodeURIComponent(state.ws)}&worktreeId=${encodeURIComponent(worktreeId)}`
+  )
+    .then((r) => {
+      if (r.error) {
+        $('#diffOut').innerHTML = `<span class="del">${esc(r.error)}</span>`;
+        return;
+      }
+      renderDiff(r.diff || '');
+    })
+    .catch(() => {
+      $('#diffOut').innerHTML = '<span class="del">Unable to load worktree diff.</span>';
+    });
+}
+
+function setIntegrationCardBusy(card, busy) {
+  if (!card) return;
+  card.classList.toggle('integrationBusy', busy);
+  card.querySelectorAll('.integrationAct').forEach((btn) => {
+    btn.disabled = busy;
+  });
+}
+
+function resolveIntegrationCards(worktreeId, resolution) {
+  if (!worktreeId) return;
+  feedEl()
+    .querySelectorAll('.integrationCard[data-worktree-id]')
+    .forEach((card) => {
+      if (card.dataset.worktreeId !== worktreeId) return;
+      card.dataset.integrated = resolution;
+      card.classList.add('integrationDone');
+      setIntegrationCardBusy(card, false);
+      card.querySelectorAll('.integrationAct').forEach((button) => {
+        button.disabled = true;
+      });
+      const note = card.querySelector('.integrationNote');
+      if (note) {
+        note.textContent =
+          resolution === 'rejected'
+            ? 'Rejected and removed. These controls are no longer active.'
+            : 'Integrated into the workspace. These controls are no longer active.';
+      }
+    });
+}
+
+async function integratePendingWorktree(worktreeId, card) {
+  if (!state.ws || !state.sid) return notify('Select a workspace and session first.');
+  if (integrationBusy.has(worktreeId)) return;
+  if (
+    !window.confirm(
+      'Integrate these changes into your main workspace checkout? Review the diff first; undo via Git if needed.'
+    )
+  )
+    return;
+  integrationBusy.add(worktreeId);
+  setIntegrationCardBusy(card, true);
+  try {
+    const r = await api('/api/worktree/integrate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ws: state.ws, sid: state.sid, worktreeId }),
+    });
+    if (r.status === 'integrated') {
+      if (card) {
+        card.classList.add('integrationDone');
+        card.dataset.integrated = 'true';
+        const note = card.querySelector('.integrationNote');
+        if (note) note.textContent = 'Integrated into workspace.';
+      }
+      notify('Changes integrated.');
+      loadChanges();
+      return;
+    }
+    notify(r.error || 'Integration failed — worktree kept for review.');
+    if (card) card.classList.add('integrationFailed');
+  } catch (_e) {
+    notify('Integration request failed.');
+  } finally {
+    integrationBusy.delete(worktreeId);
+    setIntegrationCardBusy(card, false);
+  }
+}
+
+async function rejectPendingWorktree(worktreeId, card) {
+  if (!state.ws || !state.sid) return notify('Select a workspace and session first.');
+  if (integrationBusy.has(worktreeId)) return;
+  if (
+    !window.confirm(
+      'Reject and discard this isolated worktree? Changes will not be applied to your workspace.'
+    )
+  )
+    return;
+  integrationBusy.add(worktreeId);
+  setIntegrationCardBusy(card, true);
+  try {
+    const r = await api('/api/worktree/reject', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ws: state.ws, sid: state.sid, worktreeId }),
+    });
+    if (r.status === 'rejected') {
+      if (card) {
+        card.classList.add('integrationRejected');
+        card.dataset.integrated = 'rejected';
+        const note = card.querySelector('.integrationNote');
+        if (note) note.textContent = 'Rejected — worktree discarded.';
+      }
+      notify('Pending worktree rejected.');
+      loadChanges();
+      return;
+    }
+    notify(r.error || 'Unable to reject worktree.');
+  } catch (_e) {
+    notify('Reject request failed.');
+  } finally {
+    integrationBusy.delete(worktreeId);
+    setIntegrationCardBusy(card, false);
+  }
+}
+
+function wireIntegrationCard(root, metaOverride) {
+  const card =
+    root.classList && root.classList.contains('integrationCard')
+      ? root
+      : root.querySelector('.integrationCard');
+  if (!card || card.dataset.wired === '1') return;
+  card.dataset.wired = '1';
+  const worktreeId = card.dataset.worktreeId;
+  const meta = metaOverride || {
+    step: Number(card.dataset.step || 0) || undefined,
+    total: Number(card.dataset.total || 0) || undefined,
+    diff: '',
+    diffSummary: card.dataset.hasBinary === '1' ? { hasBinary: true } : {},
+  };
+  card.querySelector('.integrationReview')?.addEventListener('click', () => {
+    showPendingWorktreeDiff(worktreeId, meta);
+  });
+  card.querySelector('.integrationIntegrate')?.addEventListener('click', () => {
+    if (card.dataset.integrated === 'true' || card.dataset.integrated === 'rejected') return;
+    integratePendingWorktree(worktreeId, card);
+  });
+  card.querySelector('.integrationReject')?.addEventListener('click', () => {
+    if (card.dataset.integrated === 'true' || card.dataset.integrated === 'rejected') return;
+    rejectPendingWorktree(worktreeId, card);
+  });
+}
+
+function pendingIntegrationHtml(e) {
+  const { actor, role, meta } = e;
+  const wt = esc((meta && meta.worktreeId) || '');
+  const step = meta && meta.step && meta.total ? `Step ${meta.step}/${meta.total}` : 'Team step';
+  const summary = esc(diffSummaryLine(meta));
+  const hasBinary = meta && meta.diffSummary && meta.diffSummary.hasBinary ? '1' : '0';
+  const cancelled = !!(meta && meta.cancelled);
+  return `<div class="integrationCard" data-worktree-id="${wt}" data-step="${meta && meta.step ? meta.step : ''}" data-total="${meta && meta.total ? meta.total : ''}" data-has-binary="${hasBinary}">
+    <div class="integrationHead"><span class="integrationTitle">${cancelled ? 'Cancelled partial work · ' : ''}${esc(step)} · ${esc(actor)}${role && role !== 'agent' ? ` (${esc(role)})` : ''}</span></div>
+    <div class="integrationSummary">${summary}</div>
+    <div class="integrationNote">${cancelled ? 'The run was cancelled. Review this partial work, then integrate it deliberately or reject it.' : 'Awaiting your review — nothing is merged until you integrate.'}</div>
+    <div class="integrationActions">
+      <button type="button" class="integrationAct integrationReview">Review changes</button>
+      <button type="button" class="integrationAct integrationIntegrate">Integrate</button>
+      <button type="button" class="integrationAct integrationReject danger">Reject</button>
+    </div>
+  </div>`;
+}
+
+function integrationFailedHtml(e) {
+  const meta = e.meta || {};
+  const wt = esc(meta.worktreeId || '');
+  const summary = esc(diffSummaryLine(meta));
+  const err = esc(meta.error || e.text || 'Integration failed');
+  return `<div class="integrationCard integrationFailed" data-worktree-id="${wt}">
+    <div class="integrationHead"><span class="integrationTitle">Integration failed</span></div>
+    <div class="integrationSummary">${summary}</div>
+    <div class="integrationNote">${err} — worktree retained for review.</div>
+    <div class="integrationActions">
+      <button type="button" class="integrationAct integrationReview">Review changes</button>
+      <button type="button" class="integrationAct integrationIntegrate">Retry integrate</button>
+      <button type="button" class="integrationAct integrationReject danger">Reject</button>
+    </div>
+  </div>`;
 }
 
 function render(e) {
@@ -1247,6 +2183,69 @@ function render(e) {
     return;
   }
   if (kind === 'system') {
+    if (type === 'task-project' && meta && meta.projectId) {
+      tasksUi.projectId = meta.projectId;
+      scheduleTasksRefresh();
+    }
+    if (type === 'pending-integration') {
+      const el = appendHTML(pendingIntegrationHtml(e));
+      wireIntegrationCard(el, e.meta || {});
+      setRunActive(false);
+      stopActivityPoll();
+      scheduleTasksRefresh();
+      return;
+    }
+    if (type === 'cancelled-worktree') {
+      const el = appendHTML(pendingIntegrationHtml(e));
+      wireIntegrationCard(el, e.meta || {});
+      setRunActive(false);
+      stopActivityPoll();
+      return;
+    }
+    if (type === 'integration-failed') {
+      const el = appendHTML(integrationFailedHtml(e));
+      wireIntegrationCard(el, e.meta || {});
+      return;
+    }
+    if (type === 'integrated') {
+      resolveIntegrationCards(meta && meta.worktreeId, 'integrated');
+      appendHTML(
+        `<div class="status integrationStatus">✓ ${esc(text || 'Changes integrated')}</div>`
+      );
+      loadChanges();
+      scheduleTasksRefresh();
+      return;
+    }
+    if (type === 'rejected') {
+      resolveIntegrationCards(meta && meta.worktreeId, 'rejected');
+      appendHTML(
+        `<div class="status integrationStatus muted">— ${esc(text || 'Worktree rejected')}</div>`
+      );
+      loadChanges();
+      scheduleTasksRefresh();
+      return;
+    }
+    if (type === 'failed-step') {
+      const err = (meta && meta.error) || text;
+      appendHTML(
+        `<div class="status stepFailed">— ${esc(text)} ✗<div class="integrationErr">${esc(err)}</div></div>`
+      );
+      if (meta && meta.worktreeId) {
+        const el = appendHTML(
+          `<div class="integrationCard integrationFailedStep" data-worktree-id="${esc(meta.worktreeId)}">
+            <div class="integrationNote">Failed step left an isolated worktree (${esc(meta.worktreeId)}). Reject it to discard.</div>
+            <div class="integrationActions">
+              <button type="button" class="integrationAct integrationReview">Review changes</button>
+              <button type="button" class="integrationAct integrationReject danger">Reject worktree</button>
+            </div>
+          </div>`
+        );
+        wireIntegrationCard(el);
+      }
+      setRunActive(false);
+      stopActivityPoll();
+      return;
+    }
     if (type === 'error') {
       maybeRateLimitError(actor, text);
       setRunActive(false);
@@ -1261,19 +2260,57 @@ function render(e) {
       appendHTML(bubble('team', '', '', `<div class="body">${esc(body || text)}</div>`));
       return;
     }
+    // context-saver token savings chip
+    if (type === 'usage' && actor === 'context') {
+      const saved = meta && meta.tokensSaved;
+      const prov = meta && meta.provider;
+      if (saved > 0) {
+        appendHTML(
+          `<div class="chip saverChip">💾 ${esc(prov || 'context')} saved ~${fmtNum(saved)} tokens</div>`
+        );
+      }
+      return;
+    }
     const running = meta && meta.running;
     if (running) {
       setRunActive(true);
       startActivityPoll();
     }
-    appendHTML(
-      `<div class="status">${running ? '<span class="dot"></span>' : '—'} ${esc(text)} ${meta && meta.done ? '✓' : ''}</div>`
-    );
     if (meta && meta.done) {
+      // Finalize any running chips for this actor
+      document.querySelectorAll(`.runningStatus[data-actor="${actor}"]`).forEach((el) => {
+        el.classList.remove('runningStatus');
+        const dot = el.querySelector('.dot');
+        if (dot) dot.remove();
+        const elapsed = el.querySelector('.elapsed');
+        if (elapsed) elapsed.remove();
+      });
+      const failed = !!(meta && meta.failed);
+      const paused = !!(meta && meta.paused);
+      const elapsedStr = (meta && meta.elapsedStr) || '';
+      const usage = meta && meta.usage;
+      const statParts = [];
+      if (elapsedStr) statParts.push(esc(elapsedStr));
+      if (usage && usage.input_tokens != null)
+        statParts.push(
+          `↗ ${fmtNum(usage.input_tokens)} in / ${fmtNum(usage.output_tokens || 0)} out`
+        );
+      const statsHtml = statParts.length
+        ? ` <span class="stepStats">${statParts.join(' · ')}</span>`
+        : '';
+      const marker = failed ? '✗' : paused ? '⏸' : '✓';
+      appendHTML(
+        `<div class="status${failed ? ' stepFailed' : ''}${paused ? ' stepPaused' : ''}">— ${esc(text)} ${marker}${statsHtml}</div>`
+      );
       finalizeActor(actor);
       setRunActive(false);
       stopActivityPoll();
       loadChanges();
+    } else {
+      const startTs = (meta && meta.startedAt) || Date.now();
+      appendHTML(
+        `<div class="status runningStatus" data-actor="${esc(actor)}" data-start="${startTs}"><span class="dot"></span> ${esc(text)} <span class="elapsed"></span></div>`
+      );
     }
     return;
   }
@@ -1325,7 +2362,10 @@ function render(e) {
     return;
   }
   if (type === 'usage') {
-    appendHTML(`<div class="chip">${esc(text)}</div>`);
+    const inp = meta && (meta.input_tokens || meta.inputTokens);
+    const out = meta && (meta.output_tokens || meta.outputTokens);
+    const usageTxt = inp != null ? `↗ ${fmtNum(inp)} in / ${fmtNum(out || 0)} out` : esc(text);
+    appendHTML(`<div class="chip usageChip">${usageTxt}</div>`);
     return;
   }
   if (type === 'rate_limit') {
@@ -1357,7 +2397,12 @@ async function ensureSession() {
   });
 }
 async function send() {
-  if (!state.ws) return notify('Add/select a workspace first');
+  const block = firstBlocker();
+  if (block) {
+    notify(block.reason);
+    if (block.action === 'connections') openConnections();
+    return;
+  }
   if (state.activeRun) return notify('A run is already active in this session.');
   const prompt = $('#prompt').value.trim();
   if (!prompt) return;
@@ -1374,9 +2419,11 @@ async function send() {
         sid: state.sid,
         adapter: $('#provider').value,
         model: $('#model').value,
+        effort: $('#effort').value,
         mode: state.mode,
         prompt,
         contextMode,
+        contextProvider,
       }),
     });
     if (r.error) {
@@ -1401,6 +2448,8 @@ $('#prompt').addEventListener('keydown', (e) => {
 async function stopRun() {
   if (!state.ws || !state.sid || !state.activeRun) return;
   $('#stop').disabled = true;
+  const topStop = $('#topStop');
+  if (topStop) topStop.disabled = true;
   try {
     const r = await api('/api/stop', {
       method: 'POST',
@@ -1409,6 +2458,7 @@ async function stopRun() {
     });
     if (r.error) {
       $('#stop').disabled = false;
+      if (topStop) topStop.disabled = false;
       return notify(r.error);
     }
     setRunActive(false);
@@ -1416,13 +2466,14 @@ async function stopRun() {
     loadChanges();
   } catch (_e) {
     $('#stop').disabled = false;
+    if (topStop) topStop.disabled = false;
     notify('Unable to stop run.');
   }
 }
 $('#stop').onclick = stopRun;
 
 // ---------- usage ----------
-const PROVIDER_ORDER = ['claude', 'codex', 'grok', 'gemini'];
+const PROVIDER_ORDER = ['claude', 'codex', 'grok', 'antigravity', 'gemini'];
 function stripTrailingZero(v) {
   return v.toFixed(1).replace(/\.0$/, '');
 }
@@ -1439,13 +2490,18 @@ function formatResetsIn(resetsAt) {
   const m = Math.floor((sec % 3600000) / 60000);
   return `${h}h ${m}m`;
 }
+function usageSourceLabel(source) {
+  const labels = {
+    reported: 'provider-reported',
+    estimated: 'estimated',
+    observed: 'observed',
+    none: 'no usage yet',
+  };
+  return labels[source] || 'observed';
+}
 function renderUsage(data) {
   const providers = (data && data.providers) || {};
-  const actors = PROVIDER_ORDER.filter(
-    (a) =>
-      providers[a] &&
-      (providers[a].calls > 0 || providers[a].tokensIn > 0 || providers[a].tokensOut > 0)
-  );
+  const actors = PROVIDER_ORDER.filter((a) => providers[a]);
   if (!actors.length) {
     $('#usageRows').innerHTML = '<div class="usageEmpty">No usage recorded yet.</div>';
     return;
@@ -1455,6 +2511,9 @@ function renderUsage(data) {
       const p = providers[actor];
       const color = COLOR[actor] || 'var(--text)';
       let stats = `${p.calls} call${p.calls === 1 ? '' : 's'} · in ${humanTokens(p.tokensIn)} · out ${humanTokens(p.tokensOut)}`;
+      if (actor === 'grok' && p.tokensIn > 0 && p.tokensOut === 0)
+        stats = `${p.calls} call${p.calls === 1 ? '' : 's'} · context ${humanTokens(p.tokensIn)}`;
+      stats += ` <span class="usageSource ${esc(p.source || 'observed')}">${esc(usageSourceLabel(p.source))}</span>`;
       if (p.costUsd > 0) stats += ` · <span class="cost">$${p.costUsd.toFixed(4)}</span>`;
       let limit = '';
       const isLimited =
@@ -1522,6 +2581,7 @@ function renderChanges(d) {
     activity.notRepo = true;
     activity.selected = null;
     updateRunControls();
+    updateCaps();
     $('#actFiles').innerHTML = `<div class="actEmpty">${NOT_REPO_MSG}</div>`;
     $('#actStat').textContent = '';
     $('#diffTitle').textContent = 'Diff';
@@ -1533,6 +2593,7 @@ function renderChanges(d) {
   activity.lastChanges = d;
   activity.changedFiles = d.files || [];
   updateRunControls();
+  updateCaps();
   const files = d.files || [];
   if (!files.length) {
     activity.selected = null;
@@ -1635,7 +2696,14 @@ async function startReview() {
     const r = await api('/api/review', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ws: state.ws, sid: state.sid, reviewer, reviewerModel, contextMode }),
+      body: JSON.stringify({
+        ws: state.ws,
+        sid: state.sid,
+        reviewer,
+        reviewerModel,
+        contextMode,
+        contextProvider,
+      }),
     });
     if (r.error) {
       setRunActive(false);
@@ -1687,7 +2755,10 @@ async function pickFolder() {
     if (r.cancelled) return;
     if (r.error) {
       if (r.fallback) {
-        notify('Native folder picker is unavailable here. Using in-app browser.', 'warn');
+        notify(
+          'Native folder picker is unavailable. Use the folder browser or paste a path.',
+          'warn'
+        );
         return openFs();
       }
       return notify(r.error);
@@ -1706,6 +2777,7 @@ async function openFs(p) {
   fsCur = d.path;
   fsCurIsRepo = !!d.isRepo;
   $('#fsPath').textContent = d.path;
+  $('#fsManualPath').value = d.path || '';
   $('#fsUp').disabled = !d.parent;
   $('#fsWarn').textContent = d.error
     ? d.error
@@ -1731,6 +2803,18 @@ $('#fsCancel').onclick = () => $('#fsModal').classList.remove('show');
 $('#fsUse').onclick = async () => {
   if (await addWorkspacePath(fsCur)) $('#fsModal').classList.remove('show');
 };
+$('#fsManualUse').onclick = async () => {
+  const folderPath = $('#fsManualPath').value.trim();
+  if (!folderPath) return notify('Paste a folder path first.');
+  if (await addWorkspacePath(folderPath, { warnNonRepo: true })) {
+    $('#fsModal').classList.remove('show');
+  }
+};
+$('#fsManualPath').addEventListener('keydown', async (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  $('#fsManualUse').click();
+});
 
 // ---------- teams ----------
 async function loadSkills() {
@@ -1749,6 +2833,14 @@ function modelOptions(selected) {
       )
       .join('');
   }).join('');
+}
+function refreshTeamModelSelects() {
+  const selects = [...document.querySelectorAll('.memberModel')];
+  for (const select of selects) {
+    const selected = select.value;
+    select.innerHTML = modelOptions(null);
+    if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+  }
 }
 function skillOptions(selectedId) {
   return (
@@ -1857,15 +2949,23 @@ function updateMemberHint(row) {
     hint.textContent = 'This provider cannot edit files — steps run as analysis only.';
   } else if (hint) hint.remove();
 }
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+function effortOptions(current) {
+  return EFFORT_LEVELS.map(
+    (e) =>
+      `<option value="${e}"${e === (current || 'medium') ? ' selected' : ''}>${esc(effortLabel(e))}</option>`
+  ).join('');
+}
 function addMemberRow(member, idx) {
   const sel = member ? `${member.adapter}|${member.model}` : '';
   const row = document.createElement('div');
   row.className = 'teamRow';
-  row.innerHTML = `<select class="memberModel">${modelOptions(member)}</select>
-    <input class="memberRole" placeholder="Role (e.g. reviewer)" value="${esc((member && member.role) || '')}" />
-    <select class="memberSkill">${skillOptions(member && member.skillId)}</select>
+  row.innerHTML = `<select class="memberModel" title="Choose provider and model for this member">${modelOptions(member)}</select>
+    <input class="memberRole" placeholder="Role (e.g. reviewer)" value="${esc((member && member.role) || '')}" title="Describe what this member is responsible for" />
+    <select class="memberSkill" title="Choose the reusable skill prompt for this member">${skillOptions(member && member.skillId)}</select>
+    <select class="memberEffort" title="Choose reasoning effort for this member">${effortOptions(member && member.effort)}</select>
     <label class="leadOnly" title="Team lead"><input type="radio" name="teamLead" value="${idx}" ${idx === editingTeam.leadIndex ? 'checked' : ''} aria-label="Team lead" /></label>
-    <button class="btn ghost rm" type="button" aria-label="Remove member">✕</button>`;
+    <button class="btn ghost rm" type="button" aria-label="Remove member" title="Remove this team member">✕</button>`;
   if (sel) row.querySelector('.memberModel').value = sel;
   row.querySelector('.memberModel').onchange = () => updateMemberHint(row);
   updateMemberHint(row);
@@ -1916,6 +3016,7 @@ function collectTeamFromModal() {
         model,
         role: row.querySelector('.memberRole').value.trim(),
         skillId: row.querySelector('.memberSkill').value || undefined,
+        effort: row.querySelector('.memberEffort').value || 'medium',
       };
     })
     .filter((m) => m.adapter);
@@ -1932,7 +3033,7 @@ function collectTeamFromModal() {
 }
 async function loadTeams() {
   TEAMS = await api('/api/teams');
-  const active = localStorage.getItem(ACTIVE_TEAM_KEY);
+  const active = PROFILE_SETTINGS.activeTeamId || localStorage.getItem(ACTIVE_TEAM_KEY);
   const valid = TEAMS.some((t) => t.id === active);
   $('#teamPick').innerHTML =
     '<option value="">— none —</option>' +
@@ -1943,12 +3044,14 @@ async function loadTeams() {
   else if (TEAMS.length) {
     $('#teamPick').value = TEAMS[0].id;
     localStorage.setItem(ACTIVE_TEAM_KEY, TEAMS[0].id);
+    saveProfileSettings({ activeTeamId: TEAMS[0].id });
   }
   updateDelegateButton();
 }
 function setActiveTeam(id) {
   if (id) localStorage.setItem(ACTIVE_TEAM_KEY, id);
   else localStorage.removeItem(ACTIVE_TEAM_KEY);
+  saveProfileSettings({ activeTeamId: id || '' });
   updateDelegateButton();
 }
 function activeTeam() {
@@ -1957,20 +3060,23 @@ function activeTeam() {
 }
 function updateDelegateButton() {
   const on = !!activeTeam();
-  $('#delegate').style.display = on ? 'inline-block' : 'none';
+  $('#splitCaret').style.display = on ? 'inline-flex' : 'none';
+  $('#splitCaret').disabled = state.activeRun;
   $('#delegate').disabled = state.activeRun;
   if (!on) hidePlan();
+  renderPreflight();
 }
 function memberName(team, memberIndex) {
   const m = team && team.members && team.members[memberIndex];
   if (!m) return `member ${memberIndex}`;
   return `${m.adapter}${m.role ? ' · ' + m.role : ''}`;
 }
-function showPlan(steps) {
+function showPlan(steps, projectId) {
   const team = activeTeam();
-  planDraft = { teamId: team.id, steps };
+  planDraft = { teamId: team.id, steps, projectId: projectId || null };
   $('#planBox').innerHTML =
     `<div class="planTitle">Review team delegation</div>` +
+    `<div class="planSteps">` +
     steps
       .map(
         (s, i) => `<div class="planStep" data-i="${i}" data-member="${s.memberIndex}">
@@ -1979,10 +3085,12 @@ function showPlan(steps) {
     </div>`
       )
       .join('') +
-    `<div class="planActions"><button class="btn ghost" id="planCancel">Cancel</button><button class="btn primary" id="planApprove">Approve</button></div>`;
+    `</div>` +
+    `<div class="planActions"><button class="btn ghost" id="planCancel" title="Cancel team delegation">Cancel</button><button class="btn primary" id="planApprove" title="Approve and run these delegated tasks">Approve</button></div>`;
   $('#planBox').classList.add('show');
   $('#planCancel').onclick = hidePlan;
   $('#planApprove').onclick = approvePlan;
+  $('#planBox').scrollIntoView({ block: 'nearest' });
 }
 function hidePlan() {
   planDraft = null;
@@ -1994,16 +3102,26 @@ async function delegateToTeam() {
   if (state.activeRun) return notify('A run is already active in this session.');
   const team = activeTeam();
   if (!team) return notify('Select a team first');
+  const blocked = teamBlocker(team);
+  if (blocked) return notify(blocked);
   const prompt = $('#prompt').value.trim();
   if (!prompt) return;
   await ensureSession();
-  $('#delegate').disabled = true;
+  $('#splitCaret').disabled = true;
   setRunActive(true);
   try {
     const r = await api('/api/plan', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ws: state.ws, sid: state.sid, teamId: team.id, prompt, contextMode }),
+      body: JSON.stringify({
+        ws: state.ws,
+        sid: state.sid,
+        teamId: team.id,
+        prompt,
+        contextMode,
+        contextProvider,
+        mode: state.mode,
+      }),
     });
     if (r.cancelled) {
       setRunActive(false);
@@ -2014,22 +3132,33 @@ async function delegateToTeam() {
       return notify(r.error);
     }
     $('#prompt').value = '';
-    showPlan(r.steps || []);
+    if (r.projectId) {
+      tasksUi.projectId = r.projectId;
+      tasksUi.selectedTaskId = null;
+    }
+    showPlan(r.steps || [], r.projectId);
     setRunActive(false);
+    loadTasksPanel();
   } catch (_e) {
     setRunActive(false);
     notify('Unable to create team plan.');
   } finally {
-    $('#delegate').disabled = state.activeRun;
+    $('#splitCaret').disabled = state.activeRun;
   }
 }
 async function approvePlan() {
   if (!planDraft) return;
   if (state.activeRun) return notify('A run is already active in this session.');
+  if (state.mode === 'edit' && activity.notRepo)
+    return notify(
+      'Approving edit-capable team work needs a git workspace. Team planning works here, but edits need git for review and recovery.'
+    );
   const rows = [...$('#planBox').querySelectorAll('.planStep')];
-  const steps = rows.map((row) => ({
+  const steps = rows.map((row, index) => ({
     memberIndex: Number(row.dataset.member),
     task: row.querySelector('.planTask').value.trim(),
+    acceptanceCriteria: planDraft.steps[index].acceptanceCriteria,
+    dependencies: planDraft.steps[index].dependencies,
   }));
   if (steps.some((s) => !s.task)) return notify('Every step needs a task.');
   $('#planApprove').disabled = true;
@@ -2042,8 +3171,11 @@ async function approvePlan() {
         ws: state.ws,
         sid: state.sid,
         teamId: planDraft.teamId,
+        projectId: planDraft.projectId,
         steps,
+        mode: state.mode,
         contextMode,
+        contextProvider,
       }),
     });
     if (r.error) {
@@ -2054,13 +3186,30 @@ async function approvePlan() {
     hidePlan();
     startActivityPoll();
     loadUsage();
+    loadTasksPanel();
   } catch (e) {
     $('#planApprove').disabled = false;
     setRunActive(false);
     if (!e.sessionExpired) notify('Unable to approve team plan.');
   }
 }
-$('#delegate').onclick = delegateToTeam;
+$('#delegate').onclick = () => {
+  closeSplitDropdown();
+  delegateToTeam();
+};
+$('#sendDirect').onclick = () => {
+  closeSplitDropdown();
+  send();
+};
+$('#splitCaret').onclick = (e) => {
+  e.stopPropagation();
+  const dd = $('#splitDropdown');
+  dd.hidden = !dd.hidden;
+};
+function closeSplitDropdown() {
+  $('#splitDropdown').hidden = true;
+}
+document.addEventListener('click', () => closeSplitDropdown());
 $('#teamPick').onchange = () => setActiveTeam($('#teamPick').value);
 $('#newTeam').onclick = () => openTeamModal(null);
 $('#editTeam').onclick = () => {
@@ -2101,8 +3250,10 @@ $('#teamDelete').onclick = async () => {
   if (!editingTeam || !editingTeam.id) return;
   if (!confirm('Delete this team?')) return;
   await api('/api/teams?id=' + encodeURIComponent(editingTeam.id), { method: 'DELETE' });
-  if (localStorage.getItem(ACTIVE_TEAM_KEY) === editingTeam.id)
+  if (localStorage.getItem(ACTIVE_TEAM_KEY) === editingTeam.id) {
     localStorage.removeItem(ACTIVE_TEAM_KEY);
+    saveProfileSettings({ activeTeamId: '' });
+  }
   $('#teamModal').classList.remove('show');
   await loadTeams();
 };

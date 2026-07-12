@@ -7,11 +7,12 @@ const { ev } = require('./base');
 // reasoning/analysis/research roles, not file-editing worker roles.
 module.exports = {
   id: 'gemini',
-  label: 'Gemini',
+  label: 'Gemini API (legacy)',
   kind: 'api',
   canEdit: false,
   defaultModel: 'gemini-2.5-pro',
   models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  effortLevels: [],
 
   async run({ prompt, model, signal }, onEvent) {
     if (signal && signal.aborted) return { finalText: '', cancelled: true };

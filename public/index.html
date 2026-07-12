@@ -1,483 +1,827 @@
 <!doctype html>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Crew Forge</title>
-<link rel="stylesheet" href="/styles.css" />
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crew Forge</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
 
-<aside class="nav">
-  <div class="brand">
-    <div class="brandTop">
-      <h1>Crew Forge</h1>
-      <button
-        class="iconBtn"
-        id="onboardingBtn"
-        type="button"
-        title="Get started"
-        aria-label="Get started"
-      >
-        ?
-      </button>
-      <button
-        class="iconBtn"
-        id="connectionsBtn"
-        type="button"
-        title="Connections"
-        aria-label="Connections"
-      >
-        ⚙
-      </button>
-    </div>
-    <div class="dots">
-      <i style="background: var(--claude)"></i><i style="background: var(--codex)"></i
-      ><i style="background: var(--grok)"></i><i style="background: var(--gemini)"></i>
-    </div>
-  </div>
-  <div class="sect">
-    <label>Workspace</label>
-    <select id="ws"></select>
-    <div class="row">
-      <button class="btn ghost" id="addWs" style="flex: 1">+ Add folder</button>
-      <button class="btn ghost" id="forgetWs" style="flex: 1; color: var(--warn)">Forget</button>
-    </div>
-  </div>
-  <div class="sect">
-    <label>Team</label>
-    <select id="teamPick" class="teamPick">
-      <option value="">— none —</option>
-    </select>
-    <div class="row">
-      <button class="btn ghost" id="editTeam" style="flex: 1">Edit</button>
-      <button class="btn ghost" id="newTeam" style="flex: 1">+ New</button>
-    </div>
-  </div>
-  <div class="sessions">
-    <h2>
-      Sessions
-      <span class="sessHeadCtrls"
-        ><button
-          class="iconBtn sortBtn"
-          id="sessSort"
-          type="button"
-          title="Newest first — click for oldest first"
-          aria-label="Toggle session sort order"
-        >
-          ↓</button
-        ><span class="plus" id="newSess" title="New session">＋</span></span
-      >
-    </h2>
-    <div id="sessList"></div>
-  </div>
-  <div class="resizeHandle" id="leftResize" title="Drag to resize sidebar"></div>
-</aside>
-
-<main>
-  <div class="top">
-    <div>
-      <div class="ws" id="wsName">No workspace</div>
-      <div class="path" id="wsPath">pick or add a folder to begin</div>
-    </div>
-    <div class="legend">
-      <span><i style="background: var(--claude)"></i>Claude</span>
-      <span><i style="background: var(--codex)"></i>Codex</span>
-      <span><i style="background: var(--grok)"></i>Grok</span>
-      <span><i style="background: var(--gemini)"></i>Gemini</span>
-    </div>
-  </div>
-
-  <div class="feed">
-    <div class="inner" id="feed">
-      <div class="empty">Pick a workspace and a model, then send a message to watch it work.</div>
-    </div>
-  </div>
-
-  <div class="composer">
-    <div class="rowResizeHandle" id="composerResize" title="Drag to resize"></div>
-    <div class="ctrls">
-      <select class="model" id="provider"></select>
-      <select class="model" id="model"></select>
-      <div class="seg" id="mode">
-        <button data-m="plan" class="on">Plan (read-only)</button>
-        <button data-m="edit">Edit (can change files)</button>
-      </div>
-      <label class="contextSaver">
-        <span>Context Saver</span>
-        <select class="model" id="contextMode" title="Compress older context before each run">
-          <option value="off">Off</option>
-          <option value="balanced">Balanced</option>
-          <option value="maximum">Maximum</option>
-        </select>
-        <button
-          class="contextSaverBadge"
-          id="contextSaverBadge"
-          type="button"
-          title="Context Saver details"
-        >
-          checking
-        </button>
-      </label>
-      <span id="caps" style="font-size: 11px; color: var(--muted)"></span>
-    </div>
-    <textarea
-      id="prompt"
-      placeholder="Message the model… (it runs against the selected workspace)"
-    ></textarea>
-    <div id="planBox" class="planBox"></div>
-    <div class="send">
-      <button class="btn ghost" id="delegate" style="display: none">Delegate to team</button>
-      <button class="btn ghost" id="stop" type="button" style="display: none; color: var(--bad)">
-        Stop
-      </button>
-      <button class="btn primary" id="send" style="margin-left: auto">Send ▶</button>
-    </div>
-  </div>
-</main>
-
-<aside class="activity">
-  <div class="resizeHandle" id="rightResize" title="Drag to resize activity panel"></div>
-
-  <div class="panelTabs" role="tablist" aria-label="Right panel">
-    <button
-      class="panelTab on"
-      data-tab="files"
-      role="tab"
-      aria-selected="true"
-      aria-controls="paneFiles"
-      id="tab-files"
-      type="button"
-    >
-      Files
-    </button>
-    <button
-      class="panelTab"
-      data-tab="terminal"
-      role="tab"
-      aria-selected="false"
-      aria-controls="paneTerminal"
-      id="tab-terminal"
-      type="button"
-    >
-      Run
-    </button>
-    <button
-      class="panelTab"
-      data-tab="preview"
-      role="tab"
-      aria-selected="false"
-      aria-controls="panePreview"
-      id="tab-preview"
-      type="button"
-    >
-      Preview
-    </button>
-    <button
-      class="panelTab"
-      data-tab="changes"
-      role="tab"
-      aria-selected="false"
-      aria-controls="paneChanges"
-      id="tab-changes"
-      type="button"
-    >
-      Changes
-    </button>
-    <button
-      class="panelTab"
-      data-tab="usage"
-      role="tab"
-      aria-selected="false"
-      aria-controls="paneUsage"
-      id="tab-usage"
-      type="button"
-    >
-      Usage
-    </button>
-  </div>
-
-  <!-- Files pane -->
-  <div class="panelPane" id="paneFiles" role="tabpanel" aria-labelledby="tab-files">
-    <div class="filePaneHead">
-      <input
-        id="fileFilter"
-        class="fileFilter"
-        type="search"
-        placeholder="Filter files…"
-        autocomplete="off"
-        aria-label="Filter files"
-      />
-    </div>
-    <div class="fileBreadcrumb">
-      <button class="btn ghost filePaneUp" id="filePaneUp" disabled type="button">↑ Up</button>
-      <span id="filePanePath"></span>
-      <button
-        class="btn ghost"
-        id="fileRefresh"
-        type="button"
-        title="Refresh"
-        style="margin-left: auto; padding: 3px 7px; font-size: 11px"
-      >
-        ↺
-      </button>
-    </div>
-    <div class="fileTree" id="fileTree">
-      <div class="actEmpty">No workspace selected.</div>
-    </div>
-  </div>
-
-  <!-- Terminal / Run pane -->
-  <div class="panelPane hidden" id="paneTerminal" role="tabpanel" aria-labelledby="tab-terminal">
-    <div class="termControls">
-      <input
-        id="devCmd"
-        class="devCmd"
-        type="text"
-        placeholder="npm start"
-        autocomplete="off"
-        spellcheck="false"
-        aria-label="Start command"
-      />
-      <button class="btn primary" id="devRun" type="button">Run</button>
-      <button class="btn ghost" id="devStop" type="button" style="display: none; color: var(--bad)">
-        Stop
-      </button>
-      <button class="btn ghost" id="devClear" type="button" title="Clear output">✕</button>
-    </div>
-    <div class="termStatus" id="termStatus"></div>
-    <pre
-      class="termOutput"
-      id="termOutput"
-    ><span class="termMeta">No process running. Enter a command and click Run.</span></pre>
-    <div class="agentLogHead">
-      <span>Agent commands</span>
-      <button class="btn ghost agentLogToggle" id="agentLogToggle" type="button">▾ show</button>
-    </div>
-    <div class="agentLogBody hidden" id="agentLogBody">
-      <pre
-        class="termOutput agentLog"
-        id="agentLog"
-      ><span class="termMeta">No commands yet.</span></pre>
-    </div>
-  </div>
-
-  <!-- Preview pane -->
-  <div class="panelPane hidden" id="panePreview" role="tabpanel" aria-labelledby="tab-preview">
-    <div class="previewBar">
-      <input
-        id="previewUrl"
-        class="previewUrl"
-        type="url"
-        value="http://localhost:3000"
-        autocomplete="off"
-        aria-label="Preview URL"
-      />
-      <button class="btn primary" id="previewLoad" type="button">Load</button>
-      <a
-        class="btn ghost"
-        id="previewExternal"
-        href="http://localhost:3000"
-        target="_blank"
-        rel="noopener noreferrer"
-        title="Open in browser"
-        >↗</a
-      >
-    </div>
-    <iframe
-      id="previewFrame"
-      class="previewFrame"
-      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-      title="App preview"
-    ></iframe>
-  </div>
-
-  <!-- Changes pane -->
-  <div class="panelPane hidden" id="paneChanges" role="tabpanel" aria-labelledby="tab-changes">
-    <div class="actHead">
-      <h2>Changes</h2>
-      <div class="reviewPick" id="reviewPick">
-        <select class="model" id="reviewModel"></select>
-        <button class="btn primary" id="reviewGo">Go</button>
-        <button class="btn ghost" id="reviewCancel">✕</button>
-      </div>
-      <button class="btn ghost reviewBtn" id="reviewBtn">Review changes</button>
-      <button class="btn ghost" id="refreshAct">Refresh</button>
-    </div>
-    <div class="actState" id="actState">Idle</div>
-    <div class="actFiles" id="actFiles"><div class="actEmpty">No workspace selected.</div></div>
-    <div class="actStat" id="actStat"></div>
-    <div class="diffBox">
-      <div class="diffTop">
-        <span id="diffTitle">Diff</span><button class="btn ghost" id="viewDiff">View diff</button>
-      </div>
-      <pre class="diff" id="diffOut">Select a changed file or refresh the diff.</pre>
-    </div>
-  </div>
-
-  <!-- Usage pane -->
-  <div class="panelPane hidden" id="paneUsage" role="tabpanel" aria-labelledby="tab-usage">
-    <div class="usageHead"><h2>Usage</h2></div>
-    <div class="usageBody">
-      <div class="usageCaption">
-        Observed through this app — providers don't expose full account balance.
-      </div>
-      <div id="usageRows"><div class="usageEmpty">No usage recorded yet.</div></div>
-    </div>
-  </div>
-</aside>
-
-<div class="modal" id="onboardingModal">
-  <div class="card onboardCard">
-    <h3>Get started</h3>
-    <div class="onboardBody" id="onboardingBody"></div>
-    <div class="foot">
-      <button class="btn ghost" id="onboardingBack" type="button">Back</button>
-      <button class="btn ghost" id="onboardingClose" type="button">Close</button>
-      <button class="btn primary" id="onboardingNext" type="button">Next</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal" id="fsModal">
-  <div class="card">
-    <h3>Choose a folder</h3>
-    <div class="crumbs">
-      <button class="btn ghost" id="fsUp">↑ Up</button><span id="fsPath"></span>
-    </div>
-    <div class="fsWarn" id="fsWarn"></div>
-    <div class="dirs" id="fsDirs"></div>
-    <div class="foot">
-      <button class="btn ghost" id="fsCancel">Cancel</button
-      ><button class="btn primary" id="fsUse">Use this folder</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal" id="teamModal">
-  <div class="card teamCard">
-    <h3 id="teamModalTitle">New team</h3>
-    <div style="padding: 12px 16px; border-bottom: 1px solid var(--line)">
-      <label
-        style="
-          font-size: 10px;
-          text-transform: uppercase;
-          letter-spacing: 0.8px;
-          color: var(--muted);
-          display: block;
-          margin-bottom: 6px;
-        "
-        >Name</label
-      >
-      <input id="teamName" placeholder="e.g. Review squad" />
-    </div>
-    <div style="padding: 12px 16px; flex: 1; min-height: 0; display: flex; flex-direction: column">
-      <div
-        style="
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 8px;
-        "
-      >
-        <label
-          style="
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            color: var(--muted);
-          "
-          >Members</label
-        >
-        <div class="teamMemberTools">
-          <button class="btn ghost" id="editSkills" style="padding: 5px 9px; font-size: 11px">
-            Edit skills
+  <body>
+    <aside class="nav">
+      <div class="brand">
+        <div class="brandTop">
+          <span class="brandMark" aria-hidden="true">CF</span>
+          <h1>Crew Forge</h1>
+          <button
+            class="iconBtn"
+            id="onboardingBtn"
+            type="button"
+            title="Get started"
+            aria-label="Get started"
+          >
+            ?
           </button>
-          <button class="btn ghost" id="addMember" style="padding: 5px 9px; font-size: 11px">
-            + Add seat
+          <button
+            class="iconBtn"
+            id="connectionsBtn"
+            type="button"
+            title="Connections"
+            aria-label="Connections"
+          >
+            ⚙
+          </button>
+          <button
+            class="iconBtn"
+            id="themeToggle"
+            type="button"
+            title="Toggle light/dark mode"
+            aria-label="Toggle theme"
+          >
+            ☀
+          </button>
+        </div>
+        <div class="brandControls">
+          <span class="fontSizerA">A</span>
+          <input
+            type="range"
+            id="fontSizeSlider"
+            min="12"
+            max="18"
+            step="1"
+            value="14"
+            aria-label="Font size"
+          />
+          <span class="fontSizerA fontSizerALg">A</span>
+        </div>
+        <div class="dots">
+          <i style="background: var(--claude)"></i><i style="background: var(--codex)"></i
+          ><i style="background: var(--grok)"></i><i style="background: var(--gemini)"></i>
+        </div>
+      </div>
+      <div class="sect">
+        <label>Workspace</label>
+        <select id="ws" title="Choose the folder Crew Forge should work on"></select>
+        <div class="row">
+          <button class="btn ghost" id="addWs" style="flex: 1" title="Add a local workspace folder">
+            + Add folder
+          </button>
+          <button
+            class="btn ghost"
+            id="forgetWs"
+            style="flex: 1; color: var(--warn)"
+            title="Remove the selected workspace from this app"
+          >
+            Forget
           </button>
         </div>
       </div>
-      <div class="teamGridHead">
-        <span>Member</span>
-        <span>Role</span>
-        <span>Skill</span>
-        <span>Lead</span>
-        <span></span>
+      <div class="sect">
+        <label>Team</label>
+        <select id="teamPick" class="teamPick" title="Choose a saved model team for delegation">
+          <option value="">— none —</option>
+        </select>
+        <div class="row">
+          <button class="btn ghost" id="editTeam" style="flex: 1" title="Edit the selected team">
+            Edit
+          </button>
+          <button class="btn ghost" id="newTeam" style="flex: 1" title="Create a new model team">
+            + New
+          </button>
+        </div>
       </div>
-      <div class="teamMembers" id="teamMembers"></div>
-    </div>
-    <div class="foot">
-      <button
-        class="btn ghost"
-        id="teamDelete"
-        style="margin-right: auto; color: var(--bad); display: none"
+      <div class="sessions">
+        <h2>
+          Sessions
+          <span class="sessHeadCtrls"
+            ><button
+              class="iconBtn sortBtn"
+              id="sessSort"
+              type="button"
+              title="Newest first — click for oldest first"
+              aria-label="Toggle session sort order"
+            >
+              ↓</button
+            ><button
+              class="plus"
+              id="newSess"
+              type="button"
+              aria-label="New session"
+              title="New session"
+            >
+              ＋
+            </button></span
+          >
+        </h2>
+        <div id="sessList"></div>
+      </div>
+      <div class="resizeHandle" id="leftResize" title="Drag to resize sidebar"></div>
+    </aside>
+
+    <main>
+      <div class="top">
+        <div class="topIdentity">
+          <div class="eyebrow">AI crew collaboration</div>
+          <div class="ws" id="wsName">No workspace</div>
+          <div class="path" id="wsPath">pick or add a folder to begin</div>
+        </div>
+        <button
+          class="btn ghost topStop"
+          id="topStop"
+          type="button"
+          style="display: none"
+          title="Stop the currently running model"
+        >
+          ■ Stop
+        </button>
+        <div class="legend" aria-label="Provider status">
+          <span class="providerCard claude"><i></i><strong>Claude</strong><em>ready</em></span>
+          <span class="providerCard codex"><i></i><strong>Codex</strong><em>ready</em></span>
+          <span class="providerCard grok"><i></i><strong>Grok</strong><em>ready</em></span>
+          <span class="providerCard antigravity"
+            ><i></i><strong>Antigravity</strong><em>cli</em></span
+          >
+        </div>
+      </div>
+
+      <div class="feed">
+        <div class="inner" id="feed">
+          <div class="empty">
+            Pick a workspace and a model, then send a message to watch it work.
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="rowResizeHandle" id="composerResize" title="Drag to resize"></div>
+        <div class="ctrls">
+          <select class="ctrlSel" id="provider" title="Choose the AI provider"></select>
+          <select class="ctrlSel" id="model" title="Choose the model for direct runs"></select>
+          <button
+            class="iconBtn modelRefresh"
+            id="refreshModels"
+            type="button"
+            title="Refresh available models from local CLIs"
+            aria-label="Refresh models"
+          >
+            ↻
+          </button>
+          <select class="ctrlSel" id="effort" title="Choose reasoning effort for this direct run">
+            <option value="">Effort: Default</option>
+          </select>
+          <div class="seg" id="mode">
+            <button
+              data-m="plan"
+              class="on"
+              title="Ask for a read-only plan; files will not be changed"
+            >
+              Plan (read-only)
+            </button>
+            <button data-m="edit" title="Allow this model to edit files in the selected workspace">
+              Edit (can change files)
+            </button>
+          </div>
+          <div class="ctrlGroup" id="advancedControls" hidden>
+            <span class="ctrlLabel">Context</span>
+            <select
+              class="ctrlSel"
+              id="contextProvider"
+              title="Choose built-in context saving or optional Headroom"
+            >
+              <option value="builtin">Built-in</option>
+              <option value="headroom">Headroom</option>
+            </select>
+            <select
+              class="ctrlSel"
+              id="contextMode"
+              title="Choose how aggressively older session context is compressed"
+            >
+              <option value="off">Off</option>
+              <option value="balanced">Balanced</option>
+              <option value="maximum">Maximum</option>
+            </select>
+          </div>
+          <button
+            class="advToggle"
+            id="advToggle"
+            type="button"
+            title="Show context saver settings"
+            aria-expanded="false"
+          >
+            Context settings
+          </button>
+          <span id="caps" class="capsMuted"></span>
+        </div>
+        <div class="preflightBar" id="preflightBar" aria-live="polite"></div>
+        <div id="planBox" class="planBox" aria-live="polite"></div>
+        <textarea
+          id="prompt"
+          placeholder="Message the model… (it runs against the selected workspace)"
+          title="Type the task or goal for the selected model or team"
+        ></textarea>
+        <div class="send">
+          <button
+            class="btn ghost"
+            id="stop"
+            type="button"
+            style="display: none; color: var(--bad)"
+            title="Stop the currently running model"
+          >
+            Stop
+          </button>
+          <div class="splitBtn" id="splitBtn" style="margin-left: auto">
+            <button
+              class="btn primary splitMain"
+              id="send"
+              type="button"
+              title="Send this prompt to the selected provider and model"
+            >
+              Send ▶
+            </button>
+            <button
+              class="btn primary splitCaret"
+              id="splitCaret"
+              type="button"
+              aria-label="More send options"
+              title="Choose send mode: direct model or team delegation"
+              style="display: none"
+            >
+              &#8964;
+            </button>
+            <div class="splitDropdown" id="splitDropdown" hidden>
+              <button
+                class="splitOpt"
+                id="sendDirect"
+                type="button"
+                title="Run only the selected provider/model"
+              >
+                Send to model
+              </button>
+              <button
+                class="splitOpt"
+                id="delegate"
+                type="button"
+                title="Ask the team lead to split and assign the work"
+              >
+                Delegate to team
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <aside class="activity">
+      <div class="resizeHandle" id="rightResize" title="Drag to resize activity panel"></div>
+
+      <div class="panelTabs" role="tablist" aria-label="Right panel">
+        <button
+          class="panelTab on"
+          data-tab="files"
+          role="tab"
+          aria-selected="true"
+          aria-controls="paneFiles"
+          id="tab-files"
+          type="button"
+          title="Browse workspace files"
+        >
+          Files
+        </button>
+        <button
+          class="panelTab"
+          data-tab="terminal"
+          role="tab"
+          aria-selected="false"
+          aria-controls="paneTerminal"
+          id="tab-terminal"
+          type="button"
+          title="Start or stop a local dev server"
+        >
+          Run
+        </button>
+        <button
+          class="panelTab"
+          data-tab="preview"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panePreview"
+          id="tab-preview"
+          type="button"
+          title="Preview a local web app URL"
+        >
+          Preview
+        </button>
+        <button
+          class="panelTab"
+          data-tab="changes"
+          role="tab"
+          aria-selected="false"
+          aria-controls="paneChanges"
+          id="tab-changes"
+          type="button"
+          title="Review git changes and ask a model to review them"
+        >
+          Changes
+        </button>
+        <button
+          class="panelTab"
+          data-tab="tasks"
+          role="tab"
+          aria-selected="false"
+          aria-controls="paneTasks"
+          id="tab-tasks"
+          type="button"
+          title="Track team delegation steps for this session"
+        >
+          Tasks
+        </button>
+        <button
+          class="panelTab"
+          data-tab="usage"
+          role="tab"
+          aria-selected="false"
+          aria-controls="paneUsage"
+          id="tab-usage"
+          type="button"
+          title="View token and rate-limit activity observed by Crew Forge"
+        >
+          Usage
+        </button>
+      </div>
+
+      <!-- Files pane -->
+      <div class="panelPane" id="paneFiles" role="tabpanel" aria-labelledby="tab-files">
+        <div class="filePaneHead">
+          <input
+            id="fileFilter"
+            class="fileFilter"
+            type="search"
+            placeholder="Filter files…"
+            autocomplete="off"
+            aria-label="Filter files"
+            title="Filter the workspace file list"
+          />
+        </div>
+        <div class="fileBreadcrumb">
+          <button
+            class="btn ghost filePaneUp"
+            id="filePaneUp"
+            disabled
+            type="button"
+            title="Go to parent folder"
+          >
+            ↑ Up
+          </button>
+          <span id="filePanePath"></span>
+          <button
+            class="btn ghost"
+            id="fileRefresh"
+            type="button"
+            title="Refresh file list"
+            style="margin-left: auto; padding: 3px 7px; font-size: 11px"
+          >
+            ↺
+          </button>
+        </div>
+        <div class="fileTree" id="fileTree">
+          <div class="actEmpty">No workspace selected.</div>
+        </div>
+        <div class="fileViewer hidden" id="fileViewer">
+          <div class="fileViewerHead">
+            <span class="fileViewerTitle" id="fileViewerTitle">No file selected</span>
+            <button class="btn ghost" id="fileViewerCopy" type="button" title="Copy this file path">
+              Copy path
+            </button>
+            <button class="btn ghost" id="fileViewerClose" type="button" title="Close file preview">
+              ×
+            </button>
+          </div>
+          <pre class="fileViewerBody" id="fileViewerBody"></pre>
+        </div>
+      </div>
+
+      <!-- Terminal / Run pane -->
+      <div
+        class="panelPane hidden"
+        id="paneTerminal"
+        role="tabpanel"
+        aria-labelledby="tab-terminal"
       >
-        Delete
-      </button>
-      <button class="btn ghost" id="teamCancel">Cancel</button>
-      <button class="btn primary" id="teamSave">Save team</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal" id="skillsModal">
-  <div class="card skillsCard">
-    <h3>Edit skills</h3>
-    <div class="skillsBody">
-      <label for="skillPick">Skill</label>
-      <select id="skillPick"></select>
-      <label for="skillName">Name</label>
-      <input id="skillName" placeholder="e.g. Product Manager" />
-      <label for="skillRole">Role</label>
-      <input id="skillRole" placeholder="e.g. Product Manager" />
-      <label for="skillInstructions">Instructions</label>
-      <textarea
-        id="skillInstructions"
-        placeholder="Describe how this skill should behave when it is assigned to a team member."
-      ></textarea>
-      <label for="skillExpectedOutputs">Expected outputs</label>
-      <textarea id="skillExpectedOutputs" placeholder="One expected output per line"></textarea>
-      <label for="skillMode">Default mode</label>
-      <select id="skillMode">
-        <option value="plan">Plan</option>
-        <option value="edit">Edit</option>
-      </select>
-      <div class="skillEditorNote" id="skillEditorNote"></div>
-    </div>
-    <div class="foot">
-      <button class="btn ghost" id="skillNew" style="margin-right: auto">New skill</button>
-      <button class="btn ghost" id="skillDelete">Delete/reset</button>
-      <button class="btn ghost" id="skillsCancel">Done</button>
-      <button class="btn primary" id="skillSave">Save skill</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal" id="connectionsModal">
-  <div class="card connectionsCard">
-    <h3>Connections</h3>
-    <div class="connectionsBody">
-      <div class="connectionsCaption">
-        Keys are stored locally in data/keys.json (never committed) and sent only to that provider.
+        <div class="termControls">
+          <input
+            id="devCmd"
+            class="devCmd"
+            type="text"
+            placeholder="npm start"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Start command"
+            title="Command to run in the selected workspace"
+          />
+          <button
+            class="btn primary"
+            id="devRun"
+            type="button"
+            title="Start this command in the workspace"
+          >
+            Run
+          </button>
+          <button
+            class="btn ghost"
+            id="devStop"
+            type="button"
+            style="display: none; color: var(--bad)"
+            title="Stop the running dev command"
+          >
+            Stop
+          </button>
+          <button class="btn ghost" id="devClear" type="button" title="Clear output">✕</button>
+        </div>
+        <div class="termStatus" id="termStatus"></div>
+        <pre
+          class="termOutput"
+          id="termOutput"
+        ><span class="termMeta">No process running. Enter a command and click Run.</span></pre>
+        <div class="agentLogHead">
+          <span>Agent commands</span>
+          <button
+            class="btn ghost agentLogToggle"
+            id="agentLogToggle"
+            type="button"
+            title="Show or hide commands reported by agents"
+          >
+            ▾ show
+          </button>
+        </div>
+        <div class="agentLogBody hidden" id="agentLogBody">
+          <pre
+            class="termOutput agentLog"
+            id="agentLog"
+          ><span class="termMeta">No commands yet.</span></pre>
+        </div>
       </div>
-      <div id="contextSaverStatus" class="contextSaverStatus"></div>
-      <div id="connectionsRows"></div>
-    </div>
-    <div class="foot">
-      <button class="btn ghost" id="connectionsRefresh">Refresh</button
-      ><button class="btn primary" id="connectionsClose">Done</button>
-    </div>
-  </div>
-</div>
 
-<div class="modal" id="contextSaverModal">
-  <div class="card contextInfoCard">
-    <h3>Context Saver</h3>
-    <div class="contextInfoBody" id="contextSaverInfoBody"></div>
-    <div class="foot">
-      <button class="btn ghost" id="contextSaverOpenConnections">Connections</button>
-      <button class="btn primary" id="contextSaverClose">Done</button>
+      <!-- Preview pane -->
+      <div class="panelPane hidden" id="panePreview" role="tabpanel" aria-labelledby="tab-preview">
+        <div class="previewBar">
+          <input
+            id="previewUrl"
+            class="previewUrl"
+            type="url"
+            value="http://localhost:3000"
+            autocomplete="off"
+            aria-label="Preview URL"
+            title="Local preview URL, for example http://localhost:3000"
+          />
+          <button
+            class="btn primary"
+            id="previewLoad"
+            type="button"
+            title="Load the local preview URL"
+          >
+            Load
+          </button>
+          <a
+            class="btn ghost"
+            id="previewExternal"
+            href="http://localhost:3000"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open preview in a new browser tab"
+            >↗</a
+          >
+        </div>
+        <iframe
+          id="previewFrame"
+          class="previewFrame"
+          sandbox="allow-scripts allow-forms allow-popups"
+          title="App preview"
+        ></iframe>
+      </div>
+
+      <!-- Changes pane -->
+      <div class="panelPane hidden" id="paneChanges" role="tabpanel" aria-labelledby="tab-changes">
+        <div class="actHead">
+          <h2>Changes</h2>
+          <div class="reviewPick" id="reviewPick">
+            <select class="model" id="reviewModel" title="Choose reviewer model"></select>
+            <button
+              class="btn primary"
+              id="reviewGo"
+              title="Start model review of current git changes"
+            >
+              Go
+            </button>
+            <button class="btn ghost" id="reviewCancel" title="Cancel review setup">✕</button>
+          </div>
+          <button
+            class="btn ghost reviewBtn"
+            id="reviewBtn"
+            title="Ask a model to review current git changes"
+          >
+            Review changes
+          </button>
+          <button class="btn ghost" id="refreshAct" title="Refresh git change list">Refresh</button>
+        </div>
+        <div class="actState" id="actState">Idle</div>
+        <div class="actFiles" id="actFiles"><div class="actEmpty">No workspace selected.</div></div>
+        <div class="actStat" id="actStat"></div>
+        <div class="diffBox">
+          <div class="diffTop">
+            <span id="diffTitle">Diff</span
+            ><button class="btn ghost" id="viewDiff" title="Show full workspace diff">
+              View diff
+            </button>
+          </div>
+          <pre class="diff" id="diffOut">Select a changed file or refresh the diff.</pre>
+        </div>
+      </div>
+
+      <!-- Tasks pane -->
+      <div class="panelPane hidden" id="paneTasks" role="tabpanel" aria-labelledby="tab-tasks">
+        <div class="tasksHead">
+          <h2>Tasks</h2>
+          <button class="btn ghost" id="tasksRefresh" type="button" title="Refresh task tracker">
+            Refresh
+          </button>
+        </div>
+        <div class="tasksCaption">
+          Transparent team step status for this session. Status changes are app-controlled — not
+          editable here.
+        </div>
+        <div class="tasksSummary" id="tasksSummary">
+          <div class="tasksEmpty">No tracked project for this session yet.</div>
+        </div>
+        <div class="tasksList" id="tasksList"></div>
+        <div class="tasksDetail hidden" id="tasksDetail"></div>
+      </div>
+
+      <!-- Usage pane -->
+      <div class="panelPane hidden" id="paneUsage" role="tabpanel" aria-labelledby="tab-usage">
+        <div class="usageHead"><h2>Usage</h2></div>
+        <div class="usageBody">
+          <div class="usageCaption">
+            Local view only — badges mark provider-reported, estimated, or observed values. Provider
+            dashboards remain the billing source of truth.
+          </div>
+          <div id="usageRows"><div class="usageEmpty">No usage recorded yet.</div></div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="modal" id="onboardingModal">
+      <div class="card onboardCard">
+        <h3>Get started</h3>
+        <div class="onboardBody" id="onboardingBody"></div>
+        <div class="foot">
+          <button
+            class="btn ghost"
+            id="onboardingBack"
+            type="button"
+            title="Go to the previous onboarding step"
+          >
+            Back
+          </button>
+          <button class="btn ghost" id="onboardingClose" type="button" title="Close onboarding">
+            Close
+          </button>
+          <button
+            class="btn primary"
+            id="onboardingNext"
+            type="button"
+            title="Go to the next onboarding step"
+          >
+            Next
+          </button>
+        </div>
+      </div>
     </div>
-  </div>
-</div>
 
-<div class="toastStack" id="toastStack" aria-live="polite"></div>
+    <div class="modal" id="fsModal">
+      <div class="card">
+        <h3>Choose a folder</h3>
+        <div class="fsManual">
+          <label for="fsManualPath">Paste folder path</label>
+          <div class="fsManualRow">
+            <input
+              id="fsManualPath"
+              type="text"
+              placeholder="/Users/sid/path/to/project"
+              title="Paste a local folder path to add it directly"
+            />
+            <button class="btn ghost" id="fsManualUse" title="Add the pasted folder path">
+              Add path
+            </button>
+          </div>
+        </div>
+        <div class="crumbs">
+          <button class="btn ghost" id="fsUp" title="Go to parent folder">↑ Up</button
+          ><span id="fsPath"></span>
+        </div>
+        <div class="fsWarn" id="fsWarn"></div>
+        <div class="dirs" id="fsDirs"></div>
+        <div class="foot">
+          <button class="btn ghost" id="fsCancel" title="Close without adding a folder">
+            Cancel</button
+          ><button class="btn primary" id="fsUse" title="Add the selected folder as a workspace">
+            Use this folder
+          </button>
+        </div>
+      </div>
+    </div>
 
-<script src="/app.js" defer></script>
+    <div class="modal" id="teamModal">
+      <div class="card teamCard">
+        <h3 id="teamModalTitle">New team</h3>
+        <p class="teamIntro">
+          How delegation works: the <strong>lead</strong> model reads your request and the
+          workspace, breaks it into steps, and assigns each step to the
+          <strong>member</strong> whose role/skill fits best. Each member runs with the effort you
+          set. Add members below, pick one as lead, then use the
+          <strong>▾ next to Send → Delegate to team</strong> to run it.
+        </p>
+        <div style="padding: 12px 16px; border-bottom: 1px solid var(--line)">
+          <label
+            style="
+              font-size: 10px;
+              text-transform: uppercase;
+              letter-spacing: 0.8px;
+              color: var(--muted);
+              display: block;
+              margin-bottom: 6px;
+            "
+            >Name</label
+          >
+          <input id="teamName" placeholder="e.g. Review squad" title="Name for this saved team" />
+        </div>
+        <div
+          style="padding: 12px 16px; flex: 1; min-height: 0; display: flex; flex-direction: column"
+        >
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 8px;
+            "
+          >
+            <label
+              style="
+                font-size: 10px;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                color: var(--muted);
+              "
+              >Members</label
+            >
+            <div class="teamMemberTools">
+              <button
+                class="btn ghost"
+                id="editSkills"
+                style="padding: 5px 9px; font-size: 11px"
+                title="Create or edit reusable team skills"
+              >
+                Edit skills
+              </button>
+              <button
+                class="btn ghost"
+                id="addMember"
+                style="padding: 5px 9px; font-size: 11px"
+                title="Add another team member"
+              >
+                + Add seat
+              </button>
+            </div>
+          </div>
+          <div class="teamGridHead">
+            <span>Member</span>
+            <span>Role</span>
+            <span>Skill</span>
+            <span>Effort</span>
+            <span>Lead</span>
+            <span></span>
+          </div>
+          <div class="teamMembers" id="teamMembers"></div>
+        </div>
+        <div class="foot">
+          <button
+            class="btn ghost"
+            id="teamDelete"
+            style="margin-right: auto; color: var(--bad); display: none"
+            title="Delete this saved team"
+          >
+            Delete
+          </button>
+          <button class="btn ghost" id="teamCancel" title="Close without saving team changes">
+            Cancel
+          </button>
+          <button class="btn primary" id="teamSave" title="Save this team">Save team</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="skillsModal">
+      <div class="card skillsCard">
+        <h3>Edit skills</h3>
+        <div class="skillsBody">
+          <label for="skillPick">Skill</label>
+          <select id="skillPick" title="Choose a built-in or local skill to edit"></select>
+          <label for="skillName">Name</label>
+          <input
+            id="skillName"
+            placeholder="e.g. Product Manager"
+            title="Skill name shown in team setup"
+          />
+          <label for="skillRole">Role</label>
+          <input
+            id="skillRole"
+            placeholder="e.g. Product Manager"
+            title="Default role this skill represents"
+          />
+          <label for="skillInstructions">Instructions</label>
+          <textarea
+            id="skillInstructions"
+            placeholder="Describe how this skill should behave when it is assigned to a team member."
+            title="Instructions passed to the model when this skill is assigned"
+          ></textarea>
+          <label for="skillExpectedOutputs">Expected outputs</label>
+          <textarea
+            id="skillExpectedOutputs"
+            placeholder="One expected output per line"
+            title="Outputs the model should produce when using this skill"
+          ></textarea>
+          <label for="skillMode">Default mode</label>
+          <select id="skillMode" title="Preferred mode when this skill is assigned">
+            <option value="plan">Plan</option>
+            <option value="edit">Edit</option>
+          </select>
+          <div class="skillEditorNote" id="skillEditorNote"></div>
+        </div>
+        <div class="foot">
+          <button
+            class="btn ghost"
+            id="skillNew"
+            style="margin-right: auto"
+            title="Start a new local skill"
+          >
+            New skill
+          </button>
+          <button
+            class="btn ghost"
+            id="skillDelete"
+            title="Delete a local skill or reset a built-in skill"
+          >
+            Delete/reset
+          </button>
+          <button class="btn ghost" id="skillsCancel" title="Close the skill editor">Done</button>
+          <button class="btn primary" id="skillSave" title="Save this skill">Save skill</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="connectionsModal">
+      <div class="card connectionsCard">
+        <h3>Connections</h3>
+        <div class="connectionsBody">
+          <div class="connectionsCaption">
+            Keys are stored locally in data/keys.json (never committed) and sent only to that
+            provider.
+          </div>
+          <div class="profileBox">
+            <div>
+              <div class="contextSaverTitle">Local Profile</div>
+              <div class="connectionsCaption">
+                Workspaces, teams, settings, custom skills, and session history are saved by this
+                local Crew Forge server. Provider keys are not exported.
+              </div>
+            </div>
+            <div class="profileActions">
+              <button class="btn ghost" id="profileExport" title="Download a local profile backup">
+                Export
+              </button>
+              <button class="btn ghost" id="profileImport" title="Restore from a Crew Forge backup">
+                Import
+              </button>
+              <input id="profileImportFile" type="file" accept="application/json,.json" hidden />
+            </div>
+          </div>
+          <div id="contextSaverStatus" class="contextSaverStatus"></div>
+          <div id="connectionsRows"></div>
+        </div>
+        <div class="foot">
+          <button
+            class="btn ghost"
+            id="connectionsRefresh"
+            title="Refresh provider and context saver status"
+          >
+            Refresh</button
+          ><button class="btn primary" id="connectionsClose" title="Close connections">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toastStack" id="toastStack" aria-live="polite"></div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

@@ -41,6 +41,13 @@ test('aggregate sums usage across providers and retains latest rate_limit', (t) 
     },
     {
       kind: 'agent',
+      actor: 'grok',
+      type: 'usage',
+      ts: 6,
+      meta: { contextTokensUsed: 1234, toolCallCount: 3, approximate: true },
+    },
+    {
+      kind: 'agent',
       actor: 'claude',
       type: 'rate_limit',
       ts: 10,
@@ -79,7 +86,7 @@ test('aggregate sums usage across providers and retains latest rate_limit', (t) 
     },
   ]);
 
-  const result = aggregate(tempRoot);
+  const result = aggregate(tempRoot, ['claude', 'codex', 'grok', 'gemini', 'unused']);
 
   assert.deepEqual(result.providers.codex, {
     calls: 2,
@@ -87,6 +94,7 @@ test('aggregate sums usage across providers and retains latest rate_limit', (t) 
     tokensOut: 60,
     costUsd: 0,
     lastRateLimit: null,
+    source: 'reported',
   });
 
   assert.deepEqual(result.providers.claude, {
@@ -99,6 +107,7 @@ test('aggregate sums usage across providers and retains latest rate_limit', (t) 
       rateLimitType: 'requests',
       resetsAt: '2026-01-02T00:00:00Z',
     },
+    source: 'reported',
   });
 
   assert.deepEqual(result.providers.gemini, {
@@ -107,6 +116,25 @@ test('aggregate sums usage across providers and retains latest rate_limit', (t) 
     tokensOut: 60,
     costUsd: 0,
     lastRateLimit: null,
+    source: 'reported',
+  });
+
+  assert.deepEqual(result.providers.grok, {
+    calls: 1,
+    tokensIn: 1234,
+    tokensOut: 0,
+    costUsd: 0,
+    lastRateLimit: null,
+    source: 'estimated',
+  });
+
+  assert.deepEqual(result.providers.unused, {
+    calls: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    costUsd: 0,
+    lastRateLimit: null,
+    source: 'none',
   });
 
   assert.equal(typeof result.generatedAt, 'number');

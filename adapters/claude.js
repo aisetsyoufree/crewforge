@@ -2,9 +2,34 @@
 
 const { spawn } = require('child_process');
 const readline = require('readline');
-const { ev, cliExitError, safeCliEnv } = require('./base');
+const { EFFORT_LEVELS, ev, normalizeEffort, cliExitError, safeCliEnv } = require('./base');
 
 const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+const CLAUDE_MODEL_EFFORT_LEVELS = {
+  sonnet: ['low', 'medium', 'high'],
+  opus: EFFORT_LEVELS,
+  haiku: ['low', 'medium', 'high'],
+};
+
+function buildArgs({ prompt, model, effort, mode }) {
+  const args = [
+    '--print',
+    prompt,
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    '--permission-mode',
+    mode === 'edit' ? 'acceptEdits' : 'plan',
+  ];
+  if (model) args.push('--model', model);
+  if (mode !== 'edit') args.push('--disallowedTools', 'Edit,Write,MultiEdit,NotebookEdit');
+  const normalizedEffort = normalizeEffort(
+    effort,
+    CLAUDE_MODEL_EFFORT_LEVELS[model] || EFFORT_LEVELS
+  );
+  if (normalizedEffort) args.push('--effort', normalizedEffort);
+  return args;
+}
 
 // Claude stream-json: system/init, assistant{message.content[]}, rate_limit_event,
 // result{result,usage,total_cost_usd}. Content blocks: text | thinking | tool_use.
@@ -15,21 +40,16 @@ module.exports = {
   canEdit: true,
   defaultModel: 'sonnet',
   models: ['sonnet', 'opus', 'haiku'],
+  effortLevels: EFFORT_LEVELS,
+  modelEffortLevels: CLAUDE_MODEL_EFFORT_LEVELS,
+  defaultEffort: 'medium',
+  _buildArgs: buildArgs,
 
-  run({ prompt, model, cwd, mode, signal }, onEvent) {
+  run({ prompt, model, effort, cwd, mode, signal }, onEvent) {
     if (signal && signal.aborted)
       return Promise.resolve({ finalText: '', usage: null, cancelled: true });
     return new Promise((resolve) => {
-      const args = [
-        '--print',
-        prompt,
-        '--output-format',
-        'stream-json',
-        '--verbose',
-        '--permission-mode',
-        mode === 'edit' ? 'acceptEdits' : 'plan',
-      ];
-      if (model) args.push('--model', model);
+      const args = buildArgs({ prompt, model, effort, mode });
 
       const child = spawn('claude', args, {
         stdio: ['ignore', 'pipe', 'pipe'],

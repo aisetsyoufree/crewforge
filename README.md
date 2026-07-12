@@ -6,9 +6,9 @@ Local-first orchestration for AI coding agents using your own provider accounts.
 
 Crew Forge is an experimental AI software team manager for developers. Give it a local workspace, connect your own AI coding tools, create model-backed team members, and coordinate planning, implementation, review, and QA from one browser UI.
 
-Why: it gives technical users one local place to compare, coordinate, and review work from Claude, Codex, Grok, and Gemini without proxying provider access.
+Why: it gives technical users one local place to compare, coordinate, and review work from Claude, Codex, Grok, Google Antigravity, and an optional legacy Gemini API connection without proxying provider access.
 
-It runs on your machine. Provider calls still leave your machine when you use Claude, Codex, Grok, or Gemini.
+It runs on your machine. Provider calls still leave your machine when you use Claude, Codex, Grok, Antigravity, or Gemini API.
 
 This project is **source-available for noncommercial use**. It is public so developers can inspect it, download it, test it, modify it for noncommercial purposes, and give feedback. Commercial use, resale, paid hosting, or rebranding it as a competing commercial product requires prior written permission.
 
@@ -29,8 +29,9 @@ Use it as a human-approved coding workspace, not as a fully autonomous engineer.
 - Create teams with named members, roles, models, and skills.
 - Assign a lead that creates delegation plans using each member's role and selected skill.
 - Compress older session context before provider calls with Context Saver.
-- Store durable task/project artifacts for the crew workflow.
-- Use Git worktrees for edit-mode task isolation in the crew task engine.
+- Track team delegation steps in a durable task/project store with a read-only **Tasks** panel (status is app-controlled; integrate worktrees to mark edit steps done).
+- Use Git worktrees for edit-mode isolation in team delegation (`lib/orchestrator.js`) and direct Edit runs.
+- Review and explicitly integrate team edit changes before they land in your main checkout.
 - Ask another model to review uncommitted changes.
 - Track observed usage from events that pass through the app.
 
@@ -44,8 +45,10 @@ Provider and product names are used for identification only. See [TRADEMARKS.md]
 
 - This is beta software. Expect rough edges and provider-specific failures.
 - Provider CLIs may change their flags or stream formats; adapters can break.
-- The lead/crew workflow is early. It supports planning and task execution primitives, but the full team/task-board orchestration experience is still in progress.
+- The **Tasks** panel is a lightweight tracker, not a full issue board: no drag/drop, no arbitrary status overrides, and no cross-session views.
 - Human review is required. Do not trust generated code without reading diffs and running tests.
+- Team edit steps run in isolated Git worktrees; integration is manual. `workspace_guard` only validates streamed file-change events — it is not a sandbox.
+- Claude, Grok, and Antigravity edit sessions can run host shell commands on your machine, like their CLIs elsewhere. Antigravity’s CLI sandbox is not a hard host boundary.
 - Edit mode requires a Git workspace in this beta; use Plan mode for non-Git folders.
 - Usage metrics are observed locally and are not authoritative billing data.
 - Session history, workspace paths, teams, and API keys are stored locally under `data/` and are not encrypted.
@@ -59,7 +62,8 @@ Provider and product names are used for identification only. See [TRADEMARKS.md]
   - Claude Code CLI (`claude`)
   - OpenAI Codex CLI (`codex`)
   - xAI Grok Build CLI (`grok` 0.2.72 or newer)
-  - Gemini API key (`GEMINI_API_KEY` or the Connections panel)
+  - Google Antigravity CLI (`agy` 1.1.1+) authenticated through the Antigravity app
+  - Optional legacy Gemini API key (`GEMINI_API_KEY` or the Connections panel)
 
 ## Quickstart
 
@@ -86,10 +90,10 @@ node server.js 3000
 Run Crew Forge on the same machine that has:
 
 - the Git workspaces you want agents to inspect or edit
-- authenticated provider CLIs for Claude, Codex, or Grok
+- authenticated provider CLIs for Claude, Codex, Grok, or Antigravity (`agy`)
 - any local credentials those CLIs need
 
-A Raspberry Pi can run the Node server if Node.js, Git, and the provider tools are installed and authenticated on the Pi. It does **not** currently orchestrate Claude/Codex/Grok CLIs running on a different Mac. If the app runs on a Pi while the authenticated CLIs and target repos live on your Mac, CLI-backed providers will not work as expected. Gemini API mode can run anywhere that has network access and a valid API key.
+A Raspberry Pi can run the Node server if Node.js, Git, and the provider tools are installed and authenticated on the Pi. It does **not** currently orchestrate Claude/Codex/Grok/Antigravity CLIs running on a different Mac. If the app runs on a Pi while the authenticated CLIs and target repos live on your Mac, CLI-backed providers will not work as expected. The legacy Gemini API mode can run anywhere that has network access and a valid API key.
 
 ## First Run
 
