@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const claude = require('../adapters/claude');
+const antigravity = require('../adapters/antigravity');
 const adapters = require('../adapters');
 const codex = require('../adapters/codex');
 const grok = require('../adapters/grok');
@@ -14,6 +15,34 @@ test('normalizeEffort accepts known levels and drops unknown values', () => {
   assert.equal(normalizeEffort('extra high'), 'xhigh');
   assert.equal(normalizeEffort('default'), null);
   assert.equal(normalizeEffort('turbo'), null);
+});
+
+test('Antigravity binds an explicit project workspace and sandbox', () => {
+  const args = antigravity._buildArgs({
+    prompt: 'build it',
+    model: 'Gemini 3.1 Pro (High)',
+    cwd: '/tmp/example',
+    mode: 'edit',
+  });
+
+  assert.deepEqual(args.slice(0, 4), ['--new-project', '--add-dir', '/tmp/example', '--model']);
+  assert.equal(args[args.indexOf('--mode') + 1], 'accept-edits');
+  assert.ok(args.includes('--sandbox'));
+  assert.equal(args.includes('--dangerously-skip-permissions'), false);
+  assert.equal(args[args.indexOf('--print') + 1], 'build it');
+});
+
+test('Antigravity plan mode stays read-only and does not auto-approve edits', () => {
+  const args = antigravity._buildArgs({
+    prompt: 'review it',
+    model: 'Gemini 3.5 Flash (High)',
+    cwd: '/tmp/example',
+    mode: 'plan',
+  });
+
+  assert.equal(args[args.indexOf('--mode') + 1], 'plan');
+  assert.ok(args.includes('--sandbox'));
+  assert.equal(args.includes('--dangerously-skip-permissions'), false);
 });
 
 test('Claude CLI receives effort flag for supported direct runs', () => {
@@ -28,6 +57,19 @@ test('Claude CLI receives effort flag for supported direct runs', () => {
     '--effort',
     'high',
   ]);
+});
+
+test('Claude plan mode disallows file-writing tools', () => {
+  const args = claude._buildArgs({
+    prompt: 'plan only',
+    model: 'sonnet',
+    effort: 'default',
+    mode: 'plan',
+  });
+
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'plan');
+  assert.ok(args.includes('--disallowedTools'));
+  assert.match(args[args.indexOf('--disallowedTools') + 1], /Write/);
 });
 
 test('Claude Sonnet only advertises and forwards low/medium/high effort', () => {

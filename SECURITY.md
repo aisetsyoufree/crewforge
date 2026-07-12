@@ -20,6 +20,8 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 ## Edit mode and code execution
 
 - **EDIT mode** lets the selected agent run arbitrary shell commands (`Bash`, exec, etc.) and modify files inside the chosen workspace.
+- **Claude**, **Grok**, and **Antigravity** edit sessions use their local CLIs and can execute host commands with your user privileges, the same as running those tools directly in a terminal.
+- **Antigravity** runs with `--sandbox`, explicit `--new-project` / `--add-dir` workspace binding, and `accept-edits` or `plan` mode. That sandbox limits some Antigravity-side behavior; it is **not** a hard host isolation boundary — `agy` still runs on your machine with your credentials.
 - Use Edit mode **only with Git workspaces you fully trust**. Crew Forge blocks Edit-mode runs for non-Git folders in this beta.
 - The combination of a folder picker + agent code execution is intentionally powerful; it is effectively a controlled terminal running inside your repo.
 - Never point the dashboard at a sensitive directory (e.g. `~`, `/`, production checkouts, directories containing private keys or customer data) unless you accept the risk.
@@ -29,7 +31,8 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 
 ### API keys (BYOK)
 
-- Provider API keys (e.g. Gemini) are stored locally in `data/keys.json` (gitignored, file mode `600`).
+- The preferred Antigravity integration uses the authenticated local `agy` CLI and does not require Crew Forge to store a Google API key.
+- Optional legacy provider API keys (e.g. Gemini API) are stored locally in `data/keys.json` (gitignored, file mode `600`).
 - On server start, saved keys are loaded into the corresponding environment variables (`GEMINI_API_KEY`, etc.) for the provider adapters.
 - The Connections panel shows keys **masked** in the UI (last four characters only).
 - Keys are stored as **plaintext at rest** on disk. Anyone with access to your user account and the `data/` directory can read them.
@@ -37,7 +40,7 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 
 ### CLI provider credentials
 
-- The three CLI-based providers (claude, codex, grok) authenticate using the credentials/tokens stored by their own CLIs (usually in user home directories under hidden folders). The dashboard never sees or stores those tokens.
+- The four CLI-based providers (claude, codex, grok, antigravity) authenticate using the credentials/tokens stored by their own CLIs or companion apps (usually in user home directories under hidden folders). The dashboard never sees or stores those tokens.
 
 ### Session and workspace data
 
@@ -50,6 +53,12 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 - Treat repository contents and anything the models read as **untrusted input**.
 - A malicious file or web page can attempt to make an agent exfiltrate data or run unwanted commands when operating in Edit mode.
 - Review plans and diffs before approving team delegation or Edit-mode actions.
+
+## Workspace guard and Git worktrees
+
+- `workspace_guard` is **advisory**: it rewrites or blocks some streamed `file_change` events that point outside the selected workspace path. It does **not** contain agents, intercept every CLI action, or prevent shell commands from touching other paths.
+- Team **edit** steps run in isolated Git worktrees under `.crewforge-worktrees/` so your main checkout stays unchanged until you **integrate**. Worktrees protect the selected repo checkout and enable review; they are **not** a host sandbox — agents still run on your machine with your credentials.
+- Team edit changes require **explicit integration** in the UI (or equivalent API). Rejecting a pending worktree discards that branch’s changes without merging them into the workspace root.
 
 ## Reporting a vulnerability
 

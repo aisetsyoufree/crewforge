@@ -1,6 +1,9 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const readline = require('readline');
 const {
   EFFORT_LEVELS,
@@ -10,6 +13,27 @@ const {
   cliExitError,
   safeCliEnv,
 } = require('./base');
+
+function signalsPath(cwd, sessionId) {
+  if (!sessionId) return null;
+  const base = path.join(
+    os.homedir(),
+    '.grok',
+    'sessions',
+    encodeURIComponent(cwd || process.cwd())
+  );
+  return path.join(base, sessionId, 'signals.json');
+}
+
+function readSignals(cwd, sessionId) {
+  const file = signalsPath(cwd, sessionId);
+  if (!file) return null;
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
 
 function buildArgs({ prompt, model, effort, cwd, mode }) {
   const args = [
@@ -53,6 +77,7 @@ module.exports = {
       const rl = readline.createInterface({ input: child.stdout });
       const stream = new TokenStreamer(onEvent);
       let finalText = '';
+      let sessionId = null;
       let stderr = '';
       let settled = false;
       let cancelled = false;
@@ -112,6 +137,7 @@ module.exports = {
             onEvent(ev('error', o.message || JSON.stringify(o)));
             break;
           case 'end':
+            sessionId = o.sessionId || sessionId;
             stream.flush();
             onEvent(ev('done', '', { finalText, stopReason: o.stopReason, session: o.sessionId }));
             break;
@@ -142,9 +168,29 @@ module.exports = {
       child.on('close', (code, sig) => {
         if (cancelled || settled) return;
         stream.flush();
+        const signals = readSignals(cwd, sessionId);
+        if (signals) {
+          onEvent(
+            ev(
+              'usage',
+              `context:${signals.contextTokensUsed || 0} tools:${signals.toolCallCount || 0}`,
+              {
+                contextTokensUsed: signals.contextTokensUsed,
+                contextWindowTokens: signals.contextWindowTokens,
+                toolCallCount: signals.toolCallCount,
+                sessionDurationSeconds: signals.sessionDurationSeconds,
+                session: sessionId,
+                approximate: true,
+              }
+            )
+          );
+        } else {
+          onEvent(ev('usage', 'call recorded; token details unavailable', { approximate: true }));
+        }
         if (code !== 0) onEvent(ev('error', cliExitError('grok', code, sig, stderr)));
         finish({ finalText, error: code !== 0 });
       });
     });
   },
+  _readSignals: readSignals,
 };

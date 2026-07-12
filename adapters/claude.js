@@ -22,6 +22,7 @@ function buildArgs({ prompt, model, effort, mode }) {
     mode === 'edit' ? 'acceptEdits' : 'plan',
   ];
   if (model) args.push('--model', model);
+  if (mode !== 'edit') args.push('--disallowedTools', 'Edit,Write,MultiEdit,NotebookEdit');
   const normalizedEffort = normalizeEffort(
     effort,
     CLAUDE_MODEL_EFFORT_LEVELS[model] || EFFORT_LEVELS

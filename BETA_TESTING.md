@@ -24,6 +24,13 @@ Crew Forge is intended for technical beta testers who understand Git, local deve
 
 Crew Forge 0.1.0-beta.2 renamed old internal `mmo` local state to `crewforge`. This may reset small browser preferences such as onboarding, active team, and worktree branch names. If you tested earlier builds, remove stale `.mmo-worktrees/` directories from test repositories after saving any work you still need.
 
+## Task Tracker
+
+- After **Delegate to team**, open the right-panel **Tasks** tab for the current session.
+- Confirm one project row appears with one task per approved plan step.
+- Approve a plan with an edit-capable member in a Git repo; when a step pauses for integration, the task should show **review** until you integrate or reject.
+- The tracker is read-only in the UI — report incorrect status as a bug rather than expecting manual edits.
+
 ## Smoke Test Flow
 
 1. Start Crew Forge with `npm start`.

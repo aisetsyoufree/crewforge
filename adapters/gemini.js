@@ -7,7 +7,7 @@ const { ev } = require('./base');
 // reasoning/analysis/research roles, not file-editing worker roles.
 module.exports = {
   id: 'gemini',
-  label: 'Gemini',
+  label: 'Gemini API (legacy)',
   kind: 'api',
   canEdit: false,
   defaultModel: 'gemini-2.5-pro',

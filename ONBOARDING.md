@@ -14,9 +14,9 @@ npm --version
 
 ## 2. Install and log in to the CLIs
 
-Run Crew Forge on the same machine where your target repositories and authenticated CLI tools live. A Pi-hosted dashboard cannot use Claude/Codex/Grok CLIs that are only installed and logged in on a Mac. Install and authenticate those CLIs on the Pi too, or run Crew Forge on the Mac.
+Run Crew Forge on the same machine where your target repositories and authenticated CLI tools live. A Pi-hosted dashboard cannot use Claude/Codex/Grok/Antigravity CLIs that are only installed and logged in on a Mac. Install and authenticate those CLIs on the Pi too, or run Crew Forge on the Mac.
 
-You need **at least one** of `claude`, `codex`, or `grok` on your PATH. Install each you plan to use according to its official instructions, then authenticate.
+You need **at least one** supported provider: `claude`, `codex`, `grok`, or authenticated `agy` (Antigravity). Install each you plan to use according to its official instructions, then authenticate.
 
 **Claude Code CLI**
 
@@ -58,9 +58,19 @@ grok login --device-auth
 
 Follow the browser OAuth flow. A token is stored locally for the CLI. Crew Forge expects Grok Build CLI 0.2.72 or newer for headless runs.
 
-## 3. (Optional) Add a Gemini API key
+## 3. Connect Google Antigravity
 
-Gemini is used via the Google API and is text-only (no file editing). You can also set `GEMINI_API_KEY` in your environment, but the easiest path is the built-in Connections panel:
+Antigravity is the preferred Google-backed provider because it uses your authenticated local CLI and can work in isolated edit worktrees.
+
+1. Install and sign in to the Antigravity app.
+2. Run `agy models` and confirm the available model list appears.
+3. In Crew Forge, refresh models and choose **Google Antigravity**.
+
+Crew Forge creates an explicit Antigravity project for each run, binds the selected workspace with `--add-dir`, and enables the Antigravity sandbox. Without those project flags, `agy` may write into its private scratch folder instead of the selected workspace.
+
+## 4. (Optional legacy) Add a Gemini API key
+
+The older Gemini adapter uses the Google API and is text-only. It remains available for compatibility or machines where Antigravity is unavailable. You can set `GEMINI_API_KEY` in your environment or use the Connections panel:
 
 1. Start the app (step 4 below).
 2. Click the **Connections** button (gear icon) in the top bar.
@@ -93,7 +103,7 @@ Open that URL in your browser.
 ## 5. Add your first workspace folder
 
 - Click **+ Add folder** in the left sidebar.
-- Browse and select a local folder. **Use a git repository** — the Activity panel (changed files, diff viewer) and **Review changes** feature rely on `git status` / `git diff`. Non-git folders work for chat and Edit mode, but Activity and review are limited.
+- Browse and select a local folder. **Use a git repository** for Edit mode — changed files, diffs, review, and recoverability rely on `git status` / `git diff`. Non-git folders are limited to Plan/read-only analysis and file preview.
 - The workspace appears in the selector and becomes active.
 - The right sidebar will show git changes and a diff once files are modified.
 
@@ -139,6 +149,7 @@ Add a short comment at the top of the README explaining the project purpose.
 - Edit tasks if desired, then click **Approve**.
 - Each step runs in sequence (models that support edit will use Edit mode; text-only models run as analysis).
 - Watch the feed and Activity panel for progress.
+- Open the **Tasks** tab in the right panel to see each plan step, owner, dependency state, attempts, and integration/review outcomes. Status updates are automatic; edit steps stay in **review** until you integrate.
 
 ## 9. Run a cross-model review
 

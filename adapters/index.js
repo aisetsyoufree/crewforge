@@ -5,6 +5,7 @@ const adapters = {
   claude: require('./claude'),
   codex: require('./codex'),
   grok: require('./grok'),
+  antigravity: require('./antigravity'),
   gemini: require('./gemini'),
 };
 

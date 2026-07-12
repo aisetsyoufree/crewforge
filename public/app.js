@@ -45,6 +45,12 @@ if (!['builtin', 'headroom'].includes(contextProvider)) contextProvider = 'built
 let directEffort = localStorage.getItem(EFFORT_KEY) || '';
 if (!['', 'low', 'medium', 'high', 'xhigh', 'max'].includes(directEffort)) directEffort = '';
 let contextSaverInfo = null;
+let PROFILE_SETTINGS = {};
+let profileLoaded = false;
+let profileSaveTimer = null;
+let profilePendingSettings = {};
+let profileSaveErrorShown = false;
+const integrationBusy = new Set();
 
 // ── theme ──────────────────────────────────────────────────
 let currentTheme = localStorage.getItem(THEME_KEY) || 'dark';
@@ -54,6 +60,7 @@ function applyTheme(theme) {
   const btn = $('#themeToggle');
   if (btn) btn.textContent = theme === 'light' ? '☽' : '☀';
   localStorage.setItem(THEME_KEY, theme);
+  saveProfileSettings({ theme });
 }
 function toggleTheme() {
   applyTheme(currentTheme === 'light' ? 'dark' : 'light');
@@ -67,6 +74,7 @@ function applyFontSize(size) {
   currentFontSize = size;
   document.documentElement.style.setProperty('--ui-font-size', size + 'px');
   localStorage.setItem(FONT_SIZE_KEY, size);
+  saveProfileSettings({ fontSize: size });
 }
 applyFontSize(currentFontSize);
 const NOT_REPO_MSG = 'Not a git repository — file activity & diff/review need a git repo';
@@ -74,21 +82,37 @@ const COLOR = {
   claude: 'var(--claude)',
   codex: 'var(--codex)',
   grok: 'var(--grok)',
+  antigravity: 'var(--gemini)',
   gemini: 'var(--gemini)',
   user: 'var(--user)',
   team: 'var(--ok)',
 };
-const AV = { claude: 'C', codex: 'Cx', grok: 'Gk', gemini: 'Gm', user: 'You', team: 'Tm' };
+const AV = {
+  claude: 'C',
+  codex: 'Cx',
+  grok: 'Gk',
+  antigravity: 'Ag',
+  gemini: 'Gm',
+  user: 'You',
+  team: 'Tm',
+};
 const CONNECTIONS = [
   { id: 'claude', name: 'Claude', method: 'CLI subscription login', apiKey: false },
   { id: 'codex', name: 'Codex', method: 'CLI subscription login', apiKey: false },
   { id: 'grok', name: 'Grok', method: 'CLI subscription login', apiKey: false },
-  { id: 'gemini', name: 'Gemini', method: 'API key', apiKey: true },
+  {
+    id: 'antigravity',
+    name: 'Google Antigravity',
+    method: 'Antigravity app sign-in',
+    apiKey: false,
+  },
+  { id: 'gemini', name: 'Gemini API (legacy)', method: 'API key', apiKey: true },
 ];
 const LOGIN_COMMANDS = {
   claude: 'claude login',
   codex: 'codex login',
   grok: 'grok login --device-auth',
+  antigravity: 'agy models',
 };
 let onboardingStep = 0,
   onboardingHealth = null,
@@ -269,6 +293,82 @@ async function api(p, opt) {
   }
   return r.json();
 }
+function applyProfileSettings(settings) {
+  const s = settings && typeof settings === 'object' ? settings : {};
+  PROFILE_SETTINGS = s;
+  if (s.sessionSort === 'newest' || s.sessionSort === 'oldest') sessionSort = s.sessionSort;
+  if (['off', 'balanced', 'maximum'].includes(s.contextMode)) contextMode = s.contextMode;
+  if (['builtin', 'headroom'].includes(s.contextProvider)) contextProvider = s.contextProvider;
+  if (['', 'low', 'medium', 'high', 'xhigh', 'max'].includes(s.directEffort || ''))
+    directEffort = s.directEffort || '';
+  if (s.theme === 'light' || s.theme === 'dark') applyTheme(s.theme);
+  if (Number.isFinite(Number(s.fontSize))) applyFontSize(Number(s.fontSize));
+}
+function localProfileFallbackSettings() {
+  const out = {
+    sessionSort,
+    contextMode,
+    contextProvider,
+    directEffort,
+    activeTeamId: localStorage.getItem(ACTIVE_TEAM_KEY) || '',
+    theme: currentTheme,
+    fontSize: currentFontSize,
+  };
+  return Object.fromEntries(
+    Object.entries(out).filter(([, value]) => value !== '' && value != null)
+  );
+}
+async function loadProfile() {
+  let settings = {};
+  try {
+    const profile = await api('/api/profile');
+    settings = (profile && profile.settings) || {};
+    applyProfileSettings(settings);
+  } catch {
+    PROFILE_SETTINGS = {};
+  }
+  profileLoaded = true;
+  const migration = {};
+  const fallback = localProfileFallbackSettings();
+  for (const [key, value] of Object.entries(fallback)) {
+    if (settings[key] == null || settings[key] === '') migration[key] = value;
+  }
+  if (Object.keys(migration).length) {
+    try {
+      const profile = await api('/api/profile', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ settings: migration }),
+      });
+      PROFILE_SETTINGS = (profile && profile.settings) || { ...PROFILE_SETTINGS, ...migration };
+    } catch {
+      notify('Unable to save local profile settings. Export may not include current UI choices.');
+    }
+  }
+}
+function saveProfileSettings(patch) {
+  if (!profileLoaded) return;
+  profilePendingSettings = { ...profilePendingSettings, ...patch };
+  clearTimeout(profileSaveTimer);
+  profileSaveTimer = setTimeout(async () => {
+    const settings = profilePendingSettings;
+    profilePendingSettings = {};
+    try {
+      await api('/api/profile', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ settings }),
+      });
+      PROFILE_SETTINGS = { ...PROFILE_SETTINGS, ...settings };
+      profileSaveErrorShown = false;
+    } catch {
+      if (!profileSaveErrorShown) {
+        profileSaveErrorShown = true;
+        notify('Unable to save local profile settings. Changes may not persist after restart.');
+      }
+    }
+  }, 250);
+}
 let _elapsedTimer = null;
 function startElapsedTick() {
   if (_elapsedTimer) return;
@@ -366,9 +466,11 @@ function renderContextSaverStatus(saver) {
   }
   const hrState = saver.headroomActive
     ? 'Active'
-    : saver.headroomInstalled
-      ? 'Installed — needs proxy/API key'
-      : 'Not installed (optional)';
+    : saver.headroomConfigured && !saver.headroomReachable
+      ? 'Configured — proxy unavailable'
+      : saver.headroomInstalled
+        ? 'Installed — needs proxy/API key'
+        : 'Not installed (optional)';
   const hrClass = saver.headroomActive ? 'set' : saver.headroomInstalled ? 'warn' : '';
   const setupRows = saver.headroomActive
     ? ''
@@ -389,9 +491,12 @@ function updateContextSaverUI() {
   const hrOpt = provSel.querySelector('option[value="headroom"]');
   if (!hrOpt) return;
   if (contextSaverInfo && !contextSaverInfo.headroomActive) {
-    hrOpt.textContent = contextSaverInfo.headroomInstalled
-      ? 'Headroom (needs config)'
-      : 'Headroom (not installed)';
+    hrOpt.textContent =
+      contextSaverInfo.headroomConfigured && !contextSaverInfo.headroomReachable
+        ? 'Headroom (proxy offline)'
+        : contextSaverInfo.headroomInstalled
+          ? 'Headroom (needs config)'
+          : 'Headroom (not installed)';
   } else if (contextSaverInfo && contextSaverInfo.headroomActive) {
     hrOpt.textContent = 'Headroom ✓';
   } else {
@@ -446,9 +551,74 @@ async function removeKey(e) {
   if (r.error) return notify(r.error);
   await loadConnections();
 }
+async function exportProfile() {
+  try {
+    const response = await fetch('/api/profile/export');
+    if (!response.ok) throw new Error('export failed');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 10);
+    link.href = url;
+    link.download = `crewforge-profile-${stamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    notify('Profile backup exported.', 'info');
+  } catch {
+    notify('Unable to export local profile.');
+  }
+}
+async function importProfileFile(file) {
+  if (!file) return;
+  if (
+    !confirm(
+      'Import this Crew Forge profile backup? This replaces local workspaces, teams, custom skills, settings, and session history with the backup contents. Provider keys stay on this machine and are not imported.'
+    )
+  ) {
+    $('#profileImportFile').value = '';
+    return;
+  }
+  try {
+    const parsed = JSON.parse(await file.text());
+    const result = await api('/api/profile/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ profile: parsed }),
+    });
+    if (result.error) return notify(result.error);
+    profileLoaded = false;
+    await loadProfile();
+    await loadWorkspaces();
+    await loadTeams();
+    await loadSkills();
+    loadConnections();
+    updateSortBtn();
+    if (PROFILE_SETTINGS.provider && CAT.some((a) => a.id === PROFILE_SETTINGS.provider)) {
+      $('#provider').value = PROFILE_SETTINGS.provider;
+    }
+    $('#contextProvider').value = contextProvider;
+    $('#contextMode').value = contextMode;
+    populateComposerModels();
+    populateEffortOptions();
+    updateCaps();
+    notify(
+      `Profile imported: ${result.workspaces || 0} workspaces, ${result.teams || 0} teams, ${result.sessions || 0} sessions.`,
+      'info'
+    );
+  } catch {
+    notify('Unable to import this profile backup.');
+  } finally {
+    $('#profileImportFile').value = '';
+  }
+}
 $('#connectionsBtn').onclick = openConnections;
 $('#connectionsClose').onclick = closeConnections;
 $('#connectionsRefresh').onclick = loadConnections;
+$('#profileExport').onclick = exportProfile;
+$('#profileImport').onclick = () => $('#profileImportFile').click();
+$('#profileImportFile').onchange = () => importProfileFile($('#profileImportFile').files[0]);
 
 // ---------- onboarding ----------
 function openOnboarding(step = 0) {
@@ -506,7 +676,7 @@ function renderOnboarding() {
   } else if (onboardingStep === 1) {
     body = `<div class="onboardStep">Step 2 of 4</div>
       <h4>${titles[1]}</h4>
-      <p>Check which providers are ready on this machine. CLI providers need their tools installed and signed in; Gemini needs an API key.</p>
+      <p>Check which providers are ready on this machine. CLI providers, including Antigravity, need their tools installed and signed in. The older Gemini API adapter needs an API key.</p>
       <div class="row" style="margin:0 0 10px"><button class="btn ghost" id="onboardingRefresh" type="button" title="Refresh provider readiness">Refresh</button></div>
       ${renderHealthRows()}`;
   } else if (onboardingStep === 2) {
@@ -579,6 +749,7 @@ function sortSessions(list) {
 $('#sessSort').onclick = () => {
   sessionSort = sessionSort === 'newest' ? 'oldest' : 'newest';
   localStorage.setItem(SESSION_SORT_KEY, sessionSort);
+  saveProfileSettings({ sessionSort });
   updateSortBtn();
   loadSessions();
 };
@@ -718,13 +889,183 @@ function switchRightTab(name) {
   localStorage.setItem(RIGHT_TAB_KEY, name);
 }
 document.querySelectorAll('.panelTab').forEach((btn) => {
-  btn.onclick = () => switchRightTab(btn.dataset.tab);
+  btn.onclick = () => {
+    switchRightTab(btn.dataset.tab);
+    if (btn.dataset.tab === 'tasks') loadTasksPanel();
+  };
 });
 (function initRightTab() {
   const saved = localStorage.getItem(RIGHT_TAB_KEY);
-  if (saved && ['files', 'terminal', 'preview', 'changes', 'usage'].includes(saved))
+  if (saved && ['files', 'terminal', 'preview', 'changes', 'tasks', 'usage'].includes(saved))
     switchRightTab(saved);
 })();
+
+// ---------- task tracker (right panel) ----------
+const tasksUi = { projectId: null, selectedTaskId: null, loading: false, error: '' };
+
+function taskStatusLabel(status) {
+  return String(status || 'unknown').replace(/_/g, ' ');
+}
+
+function renderTaskCounts(counts) {
+  if (!counts || !Object.keys(counts).length) return '';
+  return (
+    '<div class="tasksCounts">' +
+    Object.entries(counts)
+      .map(
+        ([status, n]) =>
+          `<span class="tasksCount">${esc(taskStatusLabel(status))}: ${esc(String(n))}</span>`
+      )
+      .join('') +
+    '</div>'
+  );
+}
+
+function renderTasksList(tasks) {
+  const list = $('#tasksList');
+  if (!tasks || !tasks.length) {
+    list.innerHTML = '';
+    return;
+  }
+  list.innerHTML = tasks
+    .map((task) => {
+      const on = task.id === tasksUi.selectedTaskId ? ' on' : '';
+      const deps = (task.dependencies || []).length
+        ? `deps: ${task.dependencies.length}`
+        : 'no deps';
+      return `<button type="button" class="taskRow${on}" data-task-id="${esc(task.id)}">
+        <div class="taskRowTop">
+          <span class="taskRowTitle">${esc(task.title)}</span>
+          <span class="taskStatus ${esc(task.status)}">${esc(taskStatusLabel(task.status))}</span>
+        </div>
+        <div class="taskRowMeta">${esc(task.owner || '')} · attempt ${esc(String(task.attempts || 0))} · ${esc(deps)}</div>
+      </button>`;
+    })
+    .join('');
+  list.querySelectorAll('.taskRow').forEach((row) => {
+    row.onclick = () => selectTrackedTask(row.dataset.taskId);
+  });
+}
+
+function renderTaskDetail(task) {
+  const box = $('#tasksDetail');
+  if (!task) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.classList.remove('hidden');
+  const criteria = (task.acceptanceCriteria || []).length
+    ? `<ul>${task.acceptanceCriteria.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`
+    : '<span class="muted">—</span>';
+  const evidence = (task.evidence || [])
+    .slice(-6)
+    .map((e) => JSON.stringify(e, null, 2))
+    .join('\n\n');
+  box.innerHTML =
+    `<h3>${esc(task.title)}</h3>` +
+    `<dl>
+      <dt>Status</dt><dd>${esc(taskStatusLabel(task.status))}${task.statusReason ? ' — ' + esc(task.statusReason) : ''}</dd>
+      <dt>Objective</dt><dd>${esc(task.objective || '')}</dd>
+      <dt>Owner</dt><dd>${esc(task.owner || '')}</dd>
+      <dt>Model</dt><dd>${esc(task.model || '—')}</dd>
+      <dt>Mode</dt><dd>${esc(task.mode || '')}</dd>
+      <dt>Attempts</dt><dd>${esc(String(task.attempts || 0))}</dd>
+      <dt>Updated</dt><dd>${esc(task.updatedAt || '')}</dd>
+      <dt>Worktree</dt><dd>${esc(task.worktreeId || '—')}</dd>
+      <dt>Acceptance</dt><dd>${criteria}</dd>
+    </dl>` +
+    (evidence
+      ? `<div class="tasksEvidence"><strong>Recent evidence</strong><pre>${esc(evidence)}</pre></div>`
+      : '');
+}
+
+async function loadTasksPanel() {
+  if (!state.ws || !state.sid) {
+    $('#tasksSummary').innerHTML = '<div class="tasksEmpty">Select a workspace and session.</div>';
+    $('#tasksList').innerHTML = '';
+    renderTaskDetail(null);
+    return;
+  }
+  const uiSnapshot = { ...tasksUi, loading: true, error: '' };
+  Object.assign(tasksUi, uiSnapshot);
+  $('#tasksSummary').innerHTML = '<div class="tasksEmpty">Loading…</div>';
+  let nextProjectId = uiSnapshot.projectId;
+  let nextSelectedTaskId = uiSnapshot.selectedTaskId;
+  try {
+    let projectId = nextProjectId;
+    if (!projectId) {
+      const listed = await api(
+        `/api/projects?ws=${encodeURIComponent(state.ws)}&sid=${encodeURIComponent(state.sid)}`
+      );
+      const first = (listed.projects || [])[0];
+      projectId = (first && first.project && first.project.id) || null;
+      nextProjectId = projectId;
+    }
+    if (!projectId) {
+      $('#tasksSummary').innerHTML =
+        '<div class="tasksEmpty">No tracked project for this session yet. Delegate to a team to create one.</div>';
+      $('#tasksList').innerHTML = '';
+      renderTaskDetail(null);
+      return;
+    }
+    const detail = await api(
+      `/api/projects/detail?ws=${encodeURIComponent(state.ws)}&sid=${encodeURIComponent(state.sid)}&projectId=${encodeURIComponent(projectId)}`
+    );
+    const project = detail.project || {};
+    const counts = detail.counts || {};
+    const done = (counts.done || 0) + (counts.complete || 0) + (counts.approved || 0);
+    const total = (detail.tasks || []).length;
+    $('#tasksSummary').innerHTML =
+      `<div><strong>${esc(project.objective || 'Team objective')}</strong></div>` +
+      `<div class="muted">Project ${esc(project.id || '')} · ${esc(String(done))}/${esc(String(total))} done · phase ${esc(project.phase || '')}</div>` +
+      renderTaskCounts(counts);
+    renderTasksList(detail.tasks || []);
+    const selected =
+      (detail.tasks || []).find((t) => t.id === nextSelectedTaskId) ||
+      (detail.tasks || [])[0] ||
+      null;
+    if (selected) {
+      nextSelectedTaskId = selected.id;
+      const taskRes = await api(
+        `/api/tasks/detail?ws=${encodeURIComponent(state.ws)}&sid=${encodeURIComponent(state.sid)}&projectId=${encodeURIComponent(projectId)}&taskId=${encodeURIComponent(selected.id)}`
+      );
+      renderTaskDetail(taskRes.task || selected);
+      renderTasksList(detail.tasks || []);
+    } else {
+      renderTaskDetail(null);
+    }
+  } catch (_e) {
+    $('#tasksSummary').innerHTML =
+      '<div class="tasksEmpty">Unable to load task tracker. Try Refresh.</div>';
+  } finally {
+    Object.assign(tasksUi, {
+      projectId: nextProjectId,
+      selectedTaskId: nextSelectedTaskId,
+      loading: false,
+    });
+  }
+}
+
+function selectTrackedTask(taskId) {
+  tasksUi.selectedTaskId = taskId;
+  loadTasksPanel();
+}
+
+$('#tasksRefresh').onclick = () => {
+  tasksUi.projectId = null;
+  loadTasksPanel();
+};
+
+let tasksRefreshTimer = null;
+function scheduleTasksRefresh() {
+  if (tasksRefreshTimer) return;
+  tasksRefreshTimer = setTimeout(() => {
+    tasksRefreshTimer = null;
+    const tab = document.querySelector('.panelTab.on');
+    if (tab && tab.dataset.tab === 'tasks') loadTasksPanel();
+  }, 400);
+}
 
 // ---------- file explorer ----------
 const fileExplorer = { root: null, current: null, data: null, filter: '' };
@@ -772,6 +1113,7 @@ async function openWsFiles(rootPath, navPath) {
     $('#fileTree').innerHTML = '<div class="actEmpty">No workspace selected.</div>';
     $('#filePanePath').textContent = '';
     $('#filePaneUp').disabled = true;
+    closeFilePreview();
     return;
   }
   $('#fileTree').innerHTML = '<div class="actEmpty">Loading…</div>';
@@ -824,7 +1166,7 @@ function renderFileTree(d) {
   const fileHtml = files
     .map(
       (x) =>
-        `<button type="button" class="fileEntry file" data-path="${esc(x.path)}" title="Click to copy path: ${esc(x.name)}">` +
+        `<button type="button" class="fileEntry file" data-path="${esc(x.path)}" title="Open read-only preview: ${esc(x.name)}">` +
         `<span class="fileIcon" aria-hidden="true">${esc(fileIcon(x.name))}</span>` +
         `<span class="fileName">${esc(x.name)}</span>` +
         `</button>`
@@ -840,25 +1182,7 @@ function renderFileTree(d) {
   $('#fileTree')
     .querySelectorAll('.fileEntry.file')
     .forEach((btn) => {
-      btn.onclick = async () => {
-        const rel = fileExplorer.root
-          ? btn.dataset.path.replace(fileExplorer.root, '').replace(/^[/\\]/, '')
-          : btn.dataset.path;
-        const inChanges = (activity.changedFiles || []).find((f) => f.path === rel);
-        if (inChanges) {
-          switchRightTab('changes');
-          activity.selected = inChanges.path;
-          if (activity.lastChanges) renderChanges(activity.lastChanges);
-          loadDiff(inChanges.path);
-          return;
-        }
-        try {
-          await navigator.clipboard.writeText(rel);
-          notify(`Copied: ${rel}`, 'info');
-        } catch (_e) {
-          notify(`Copy failed — ${rel}`, 'info');
-        }
-      };
+      btn.onclick = () => openFilePreview(btn.dataset.path);
     });
   if (d.truncated) {
     $('#fileTree').insertAdjacentHTML(
@@ -868,6 +1192,38 @@ function renderFileTree(d) {
   }
 }
 
+async function openFilePreview(filePath) {
+  if (!state.ws || !filePath) return;
+  const viewer = $('#fileViewer');
+  viewer.classList.remove('hidden');
+  $('#fileViewerTitle').textContent = 'Loading...';
+  $('#fileViewerBody').textContent = '';
+  $('#fileViewerCopy').dataset.path = filePath;
+  try {
+    const d = await api(
+      '/api/file?ws=' + encodeURIComponent(state.ws) + '&path=' + encodeURIComponent(filePath)
+    );
+    if (d.error) {
+      $('#fileViewerTitle').textContent = d.path || filePath;
+      $('#fileViewerBody').textContent = d.error;
+      return;
+    }
+    $('#fileViewerTitle').textContent = d.relativePath || d.name || filePath;
+    $('#fileViewerCopy').dataset.path = d.path || filePath;
+    $('#fileViewerBody').textContent = d.content || '';
+  } catch (_e) {
+    $('#fileViewerTitle').textContent = filePath;
+    $('#fileViewerBody').textContent = 'Unable to open file.';
+  }
+}
+
+function closeFilePreview() {
+  $('#fileViewer').classList.add('hidden');
+  $('#fileViewerTitle').textContent = 'No file selected';
+  $('#fileViewerBody').textContent = '';
+  $('#fileViewerCopy').dataset.path = '';
+}
+
 $('#filePaneUp').onclick = () => {
   if (!fileExplorer.data || !fileExplorer.data.parent) return;
   if (fileExplorer.current === fileExplorer.root) return;
@@ -875,6 +1231,17 @@ $('#filePaneUp').onclick = () => {
 };
 $('#fileRefresh').onclick = () => {
   if (fileExplorer.root) openWsFiles(fileExplorer.root, fileExplorer.current);
+};
+$('#fileViewerClose').onclick = closeFilePreview;
+$('#fileViewerCopy').onclick = async () => {
+  const filePath = $('#fileViewerCopy').dataset.path;
+  if (!filePath) return;
+  try {
+    await navigator.clipboard.writeText(filePath);
+    notify('Copied file path.', 'info');
+  } catch (_e) {
+    notify('Unable to copy file path.', 'info');
+  }
 };
 
 // ---------- dev server runner ----------
@@ -1060,37 +1427,78 @@ $('#fileFilter').oninput = () => {
 };
 
 // ---------- bootstrap ----------
-(async () => {
-  CAT = await api('/api/catalog');
-  await loadSkills();
+function renderProviderOptions() {
   $('#provider').innerHTML = CAT.map(
     (a) =>
       `<option value="${a.id}" data-edit="${a.canEdit}">${esc(a.label)}${a.canEdit ? '' : ' (text only)'}</option>`
   ).join('');
+}
+
+async function refreshModelCatalog() {
+  const button = $('#refreshModels');
+  const selectedProviderId = $('#provider').value;
+  const selectedModel = $('#model').value;
+  button.disabled = true;
+  button.classList.add('loading');
+  try {
+    CAT = await api('/api/catalog/refresh');
+    renderProviderOptions();
+    if (selectedProviderId && CAT.some((a) => a.id === selectedProviderId)) {
+      $('#provider').value = selectedProviderId;
+    }
+    populateComposerModels(selectedModel);
+    populateEffortOptions();
+    populateReviewModels();
+    refreshTeamModelSelects();
+    updateCaps();
+    notify('Model list refreshed from local CLIs.', 'info');
+  } catch {
+    notify('Unable to refresh models from local CLIs.');
+  } finally {
+    button.disabled = false;
+    button.classList.remove('loading');
+  }
+}
+
+(async () => {
+  CAT = await api('/api/catalog');
+  await loadProfile();
+  await loadSkills();
+  renderProviderOptions();
+  if (PROFILE_SETTINGS.provider && CAT.some((a) => a.id === PROFILE_SETTINGS.provider)) {
+    $('#provider').value = PROFILE_SETTINGS.provider;
+  }
   $('#provider').onchange = () => {
     populateComposerModels();
+    saveProfileSettings({ provider: $('#provider').value, model: $('#model').value });
     populateEffortOptions();
     updateCaps();
     populateReviewModels();
   };
   $('#model').onchange = () => {
+    saveProfileSettings({ provider: $('#provider').value, model: $('#model').value });
     populateEffortOptions();
     updateCaps();
   };
   $('#effort').onchange = () => {
     directEffort = $('#effort').value;
     localStorage.setItem(EFFORT_KEY, directEffort);
+    saveProfileSettings({ directEffort });
     updateCaps();
   };
+  $('#refreshModels').onclick = refreshModelCatalog;
   $('#contextProvider').value = contextProvider;
   $('#contextProvider').onchange = () => {
     contextProvider = $('#contextProvider').value;
     localStorage.setItem(CONTEXT_PROVIDER_KEY, contextProvider);
+    saveProfileSettings({ contextProvider });
     if (contextProvider === 'headroom' && contextSaverInfo && !contextSaverInfo.headroomActive) {
       notify(
-        contextSaverInfo.headroomInstalled
-          ? 'Headroom is installed but needs configuration. Open Connections for details.'
-          : 'Headroom is not installed. Open Connections for setup steps.',
+        contextSaverInfo.headroomConfigured && !contextSaverInfo.headroomReachable
+          ? 'Headroom is configured, but the proxy is not reachable. Built-in context saver will be used.'
+          : contextSaverInfo.headroomInstalled
+            ? 'Headroom is installed but needs configuration. Open Connections for details.'
+            : 'Headroom is not installed. Open Connections for setup steps.',
         'warn'
       );
     }
@@ -1099,6 +1507,7 @@ $('#fileFilter').oninput = () => {
   $('#contextMode').onchange = () => {
     contextMode = $('#contextMode').value;
     localStorage.setItem(CONTEXT_MODE_KEY, contextMode);
+    saveProfileSettings({ contextMode });
   };
   $('#topStop').onclick = stopRun;
   $('#themeToggle').onclick = toggleTheme;
@@ -1120,7 +1529,7 @@ $('#fileFilter').oninput = () => {
     slider.value = currentFontSize;
     slider.oninput = () => applyFontSize(Number(slider.value));
   }
-  populateComposerModels();
+  populateComposerModels(PROFILE_SETTINGS.model);
   populateEffortOptions();
   updateCaps();
   populateReviewModels();
@@ -1133,6 +1542,7 @@ $('#fileFilter').oninput = () => {
   loadOnboardingHealth().then(() => {
     refreshEmptyState();
     updateCaps();
+    renderPreflight();
   });
   if (!localStorage.getItem(ONBOARD_KEY)) openOnboarding();
 })();
@@ -1140,7 +1550,7 @@ $('#fileFilter').oninput = () => {
 function selectedProvider() {
   return CAT.find((x) => x.id === $('#provider').value);
 }
-function populateComposerModels() {
+function populateComposerModels(preferredModel) {
   const a = selectedProvider();
   if (!a) {
     $('#model').innerHTML = '';
@@ -1150,6 +1560,10 @@ function populateComposerModels() {
     .map((m) => `<option value="${esc(m)}">${esc(m)}</option>`)
     .join('');
   if (a.defaultModel) $('#model').value = a.defaultModel;
+  const wanted = preferredModel || PROFILE_SETTINGS.model;
+  if (wanted && (a.models || []).includes(wanted)) {
+    $('#model').value = wanted;
+  }
 }
 function effortLabel(level) {
   const labels = {
@@ -1192,6 +1606,68 @@ function providerReadiness(id) {
   if (!Array.isArray(onboardingHealth)) return null;
   return onboardingHealth.find((p) => p.id === id) || null;
 }
+function providerReadyLabel(id) {
+  const h = providerReadiness(id);
+  if (!h) return { status: 'warn', text: `${id}: readiness unknown` };
+  return h.ready
+    ? { status: 'ok', text: `${id}: ready` }
+    : { status: 'bad', text: `${id}: setup needed` };
+}
+function preflightItems() {
+  const items = [];
+  const workspace = state.wsPath || '';
+  items.push(
+    state.ws
+      ? { status: 'ok', text: `Workspace: ${$('#wsName').textContent || 'selected'}` }
+      : { status: 'bad', text: 'No workspace selected' }
+  );
+  if (state.ws) {
+    if (activity.notRepo) {
+      items.push(
+        state.mode === 'edit'
+          ? { status: 'bad', text: 'Non-Git workspace: Plan only' }
+          : { status: 'warn', text: 'Non-Git workspace: Plan/read-only only' }
+      );
+    } else {
+      items.push({ status: 'ok', text: 'Git workspace ready' });
+    }
+  }
+  const a = selectedProvider();
+  if (a) {
+    items.push(providerReadyLabel(a.id));
+    items.push({
+      status: state.mode === 'edit' && !a.canEdit ? 'bad' : 'ok',
+      text: `${state.mode === 'edit' ? 'Edit' : 'Plan'} mode${a.canEdit ? '' : ' · text-only provider'}`,
+    });
+  }
+  const team = activeTeam && activeTeam();
+  if (team && team.members && team.members.length) {
+    const providers = [...new Set(team.members.map((m) => m.adapter).filter(Boolean))];
+    const unavailable = providers.filter((id) => {
+      const h = providerReadiness(id);
+      return h && !h.ready;
+    });
+    if (unavailable.length)
+      items.push({ status: 'bad', text: `Team blocked: ${unavailable.join(', ')} setup needed` });
+    else items.push({ status: 'ok', text: `Team: ${team.members.length} seats` });
+  }
+  if (workspace) items.push({ status: 'info', text: workspace });
+  return items;
+}
+function renderPreflight() {
+  const bar = $('#preflightBar');
+  if (!bar) return;
+  const items = preflightItems();
+  const worst = items.some((x) => x.status === 'bad')
+    ? 'bad'
+    : items.some((x) => x.status === 'warn')
+      ? 'warn'
+      : 'ok';
+  bar.className = `preflightBar ${worst}`;
+  bar.innerHTML = items
+    .map((item) => `<span class="preflightChip ${item.status}">${esc(item.text)}</span>`)
+    .join('');
+}
 function updateCaps() {
   const a = selectedProvider();
   const caps = $('#caps');
@@ -1205,7 +1681,8 @@ function updateCaps() {
     const effortText = modelEffortLevels().length
       ? ` · effort: ${esc($('#effort').value || 'default')}`
       : '';
-    caps.innerHTML = `models: ${esc(a.models.join(', '))}${effortText}${badge}`;
+    const sourceText = a.modelSource ? ` · ${esc(a.modelSource)}` : '';
+    caps.innerHTML = `models: ${esc(a.models.join(', '))}${effortText}${sourceText}${badge}`;
   } else {
     caps.textContent = '';
   }
@@ -1226,12 +1703,14 @@ function updateCaps() {
     editBtn.style.opacity = 1;
     editBtn.title = '';
   }
+  renderPreflight();
 }
 function setMode(m) {
   state.mode = m;
   $('#mode')
     .querySelectorAll('button')
     .forEach((b) => b.classList.toggle('on', b.dataset.m === m));
+  renderPreflight();
 }
 
 // ---------- first-run readiness ----------
@@ -1252,7 +1731,28 @@ function firstBlocker() {
     };
   if (!state.ws)
     return { reason: 'Add a workspace folder to begin (＋ Add folder).', action: 'workspace' };
+  const a = selectedProvider();
+  const h = a && providerReadiness(a.id);
+  if (providersKnown() && h && !h.ready)
+    return {
+      reason: `${a.label || a.id} needs setup before it can run. Open Connections for setup steps.`,
+      action: 'connections',
+    };
   return null;
+}
+function teamBlocker(team) {
+  if (!team || !team.members || !team.members.length) return 'Select a team first';
+  if (providersKnown()) {
+    const unavailable = [...new Set(team.members.map((m) => m.adapter).filter(Boolean))].filter(
+      (id) => {
+        const h = providerReadiness(id);
+        return h && !h.ready;
+      }
+    );
+    if (unavailable.length)
+      return `Team provider setup needed before delegation: ${unavailable.join(', ')}`;
+  }
+  return '';
 }
 function checklistRow(done, label, hint, action) {
   const tag = action && !done ? 'button' : 'div';
@@ -1268,7 +1768,7 @@ function emptyStateHtml() {
     <p class="firstRunSub">Run AI coding models against a local folder — solo or as a delegated team. Three steps to your first run:</p>
     ${checklistRow(provDone, 'Connect a model', provDone ? 'A provider is signed in and ready.' : 'Click here to open Connections and sign in to Claude, Codex, or Grok.', 'connect')}
     ${checklistRow(wsDone, 'Pick a workspace', wsDone ? 'Working in this folder.' : 'Click here to add a folder. Tip: choose a git repo so Edit, diffs, review, and teams all work.', 'workspace')}
-    ${checklistRow(false, 'Send your first prompt', notRepo ? 'Heads-up: this folder isn’t a git repo, so Edit / diff / review / teams are limited. Plan mode still works.' : 'Plan mode is read-only and safe. Switch to Edit to let the model change files.')}
+    ${checklistRow(false, 'Send your first prompt', notRepo ? 'Heads-up: this folder isn’t a git repo, so Edit / diff / review and team approval are limited. Plan mode and team planning still work.' : 'Plan mode is read-only and safe. Switch to Edit to let the model change files.')}
   </div>`;
 }
 function refreshEmptyState() {
@@ -1297,7 +1797,12 @@ async function loadWorkspaces() {
     '<option value="">— none —</option>';
   $('#forgetWs').disabled = !list.length;
   if (list.length) {
-    const next = state.ws && list.some((w) => w.id === state.ws) ? state.ws : list[0].id;
+    const savedWs =
+      PROFILE_SETTINGS.selectedWorkspaceId &&
+      list.some((w) => w.id === PROFILE_SETTINGS.selectedWorkspaceId)
+        ? PROFILE_SETTINGS.selectedWorkspaceId
+        : null;
+    const next = state.ws && list.some((w) => w.id === state.ws) ? state.ws : savedWs || list[0].id;
     $('#ws').value = next;
     selectWs(next, list);
     return;
@@ -1326,20 +1831,31 @@ function clearWorkspace() {
   $('#diffTitle').textContent = 'Diff';
   $('#diffOut').textContent = 'Select a changed file or refresh the diff.';
   $('#forgetWs').disabled = true;
+  renderPreflight();
 }
 async function selectWs(id, list) {
   list = list || (await api('/api/workspaces'));
   const w = list.find((x) => x.id === id);
   if (!w) return;
+  const changed = state.ws !== id;
   state.ws = id;
   state.wsPath = w.path;
+  if (changed) state.sid = null;
   $('#wsName').textContent = w.name;
   $('#wsPath').textContent = w.path;
+  saveProfileSettings({ selectedWorkspaceId: id, selectedSessionId: state.sid || '' });
   activity.selected = null;
   openWsFiles(w.path);
   syncDevStatus();
   await loadChanges();
-  await loadSessions();
+  const sessions = await loadSessions();
+  const savedSession =
+    PROFILE_SETTINGS.selectedWorkspaceId === id &&
+    PROFILE_SETTINGS.selectedSessionId &&
+    sessions.some((s) => s.id === PROFILE_SETTINGS.selectedSessionId)
+      ? PROFILE_SETTINGS.selectedSessionId
+      : null;
+  if (!state.sid && savedSession) openSession(savedSession);
 }
 async function forgetWorkspace() {
   if (!state.ws) return;
@@ -1374,6 +1890,7 @@ async function loadSessions() {
   $('#sessList')
     .querySelectorAll('.sess')
     .forEach((d) => (d.onclick = () => openSession(d.dataset.id)));
+  return list;
 }
 $('#newSess').onclick = async () => {
   if (!state.ws) return notify('Add a workspace first');
@@ -1389,6 +1906,9 @@ $('#newSess').onclick = async () => {
 // ---------- session stream ----------
 function openSession(sid) {
   state.sid = sid;
+  tasksUi.projectId = null;
+  tasksUi.selectedTaskId = null;
+  saveProfileSettings({ selectedWorkspaceId: state.ws, selectedSessionId: sid });
   live = {};
   setRunActive(false);
   $('#feed').innerHTML = '';
@@ -1449,6 +1969,210 @@ function maybeRateLimitError(actor, text) {
   return true;
 }
 
+function diffSummaryLine(meta) {
+  const s = (meta && meta.diffSummary) || {};
+  const parts = [];
+  if (s.fileCount) parts.push(`${s.fileCount} file${s.fileCount === 1 ? '' : 's'}`);
+  if (s.insertions || s.deletions) parts.push(`+${s.insertions || 0} / -${s.deletions || 0}`);
+  if (s.hasBinary) parts.push('binary');
+  if (s.empty) parts.push('no textual diff');
+  return parts.join(' · ') || 'Changed files pending review';
+}
+
+function showPendingWorktreeDiff(worktreeId, meta) {
+  switchRightTab('changes');
+  const step =
+    meta && meta.step && meta.total ? `Step ${meta.step}/${meta.total}` : 'Pending integration';
+  $('#diffTitle').textContent = `${step} · ${worktreeId || 'worktree'}`;
+  const diff = (meta && meta.diff) || '';
+  if (diff) {
+    renderDiff(diff);
+    return;
+  }
+  $('#diffOut').innerHTML = '<span class="meta">Loading diff...</span>';
+  api(
+    `/api/worktree/pending?ws=${encodeURIComponent(state.ws)}&worktreeId=${encodeURIComponent(worktreeId)}`
+  )
+    .then((r) => {
+      if (r.error) {
+        $('#diffOut').innerHTML = `<span class="del">${esc(r.error)}</span>`;
+        return;
+      }
+      renderDiff(r.diff || '');
+    })
+    .catch(() => {
+      $('#diffOut').innerHTML = '<span class="del">Unable to load worktree diff.</span>';
+    });
+}
+
+function setIntegrationCardBusy(card, busy) {
+  if (!card) return;
+  card.classList.toggle('integrationBusy', busy);
+  card.querySelectorAll('.integrationAct').forEach((btn) => {
+    btn.disabled = busy;
+  });
+}
+
+function resolveIntegrationCards(worktreeId, resolution) {
+  if (!worktreeId) return;
+  feedEl()
+    .querySelectorAll('.integrationCard[data-worktree-id]')
+    .forEach((card) => {
+      if (card.dataset.worktreeId !== worktreeId) return;
+      card.dataset.integrated = resolution;
+      card.classList.add('integrationDone');
+      setIntegrationCardBusy(card, false);
+      card.querySelectorAll('.integrationAct').forEach((button) => {
+        button.disabled = true;
+      });
+      const note = card.querySelector('.integrationNote');
+      if (note) {
+        note.textContent =
+          resolution === 'rejected'
+            ? 'Rejected and removed. These controls are no longer active.'
+            : 'Integrated into the workspace. These controls are no longer active.';
+      }
+    });
+}
+
+async function integratePendingWorktree(worktreeId, card) {
+  if (!state.ws || !state.sid) return notify('Select a workspace and session first.');
+  if (integrationBusy.has(worktreeId)) return;
+  if (
+    !window.confirm(
+      'Integrate these changes into your main workspace checkout? Review the diff first; undo via Git if needed.'
+    )
+  )
+    return;
+  integrationBusy.add(worktreeId);
+  setIntegrationCardBusy(card, true);
+  try {
+    const r = await api('/api/worktree/integrate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ws: state.ws, sid: state.sid, worktreeId }),
+    });
+    if (r.status === 'integrated') {
+      if (card) {
+        card.classList.add('integrationDone');
+        card.dataset.integrated = 'true';
+        const note = card.querySelector('.integrationNote');
+        if (note) note.textContent = 'Integrated into workspace.';
+      }
+      notify('Changes integrated.');
+      loadChanges();
+      return;
+    }
+    notify(r.error || 'Integration failed — worktree kept for review.');
+    if (card) card.classList.add('integrationFailed');
+  } catch (_e) {
+    notify('Integration request failed.');
+  } finally {
+    integrationBusy.delete(worktreeId);
+    setIntegrationCardBusy(card, false);
+  }
+}
+
+async function rejectPendingWorktree(worktreeId, card) {
+  if (!state.ws || !state.sid) return notify('Select a workspace and session first.');
+  if (integrationBusy.has(worktreeId)) return;
+  if (
+    !window.confirm(
+      'Reject and discard this isolated worktree? Changes will not be applied to your workspace.'
+    )
+  )
+    return;
+  integrationBusy.add(worktreeId);
+  setIntegrationCardBusy(card, true);
+  try {
+    const r = await api('/api/worktree/reject', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ws: state.ws, sid: state.sid, worktreeId }),
+    });
+    if (r.status === 'rejected') {
+      if (card) {
+        card.classList.add('integrationRejected');
+        card.dataset.integrated = 'rejected';
+        const note = card.querySelector('.integrationNote');
+        if (note) note.textContent = 'Rejected — worktree discarded.';
+      }
+      notify('Pending worktree rejected.');
+      loadChanges();
+      return;
+    }
+    notify(r.error || 'Unable to reject worktree.');
+  } catch (_e) {
+    notify('Reject request failed.');
+  } finally {
+    integrationBusy.delete(worktreeId);
+    setIntegrationCardBusy(card, false);
+  }
+}
+
+function wireIntegrationCard(root, metaOverride) {
+  const card =
+    root.classList && root.classList.contains('integrationCard')
+      ? root
+      : root.querySelector('.integrationCard');
+  if (!card || card.dataset.wired === '1') return;
+  card.dataset.wired = '1';
+  const worktreeId = card.dataset.worktreeId;
+  const meta = metaOverride || {
+    step: Number(card.dataset.step || 0) || undefined,
+    total: Number(card.dataset.total || 0) || undefined,
+    diff: '',
+    diffSummary: card.dataset.hasBinary === '1' ? { hasBinary: true } : {},
+  };
+  card.querySelector('.integrationReview')?.addEventListener('click', () => {
+    showPendingWorktreeDiff(worktreeId, meta);
+  });
+  card.querySelector('.integrationIntegrate')?.addEventListener('click', () => {
+    if (card.dataset.integrated === 'true' || card.dataset.integrated === 'rejected') return;
+    integratePendingWorktree(worktreeId, card);
+  });
+  card.querySelector('.integrationReject')?.addEventListener('click', () => {
+    if (card.dataset.integrated === 'true' || card.dataset.integrated === 'rejected') return;
+    rejectPendingWorktree(worktreeId, card);
+  });
+}
+
+function pendingIntegrationHtml(e) {
+  const { actor, role, meta } = e;
+  const wt = esc((meta && meta.worktreeId) || '');
+  const step = meta && meta.step && meta.total ? `Step ${meta.step}/${meta.total}` : 'Team step';
+  const summary = esc(diffSummaryLine(meta));
+  const hasBinary = meta && meta.diffSummary && meta.diffSummary.hasBinary ? '1' : '0';
+  const cancelled = !!(meta && meta.cancelled);
+  return `<div class="integrationCard" data-worktree-id="${wt}" data-step="${meta && meta.step ? meta.step : ''}" data-total="${meta && meta.total ? meta.total : ''}" data-has-binary="${hasBinary}">
+    <div class="integrationHead"><span class="integrationTitle">${cancelled ? 'Cancelled partial work · ' : ''}${esc(step)} · ${esc(actor)}${role && role !== 'agent' ? ` (${esc(role)})` : ''}</span></div>
+    <div class="integrationSummary">${summary}</div>
+    <div class="integrationNote">${cancelled ? 'The run was cancelled. Review this partial work, then integrate it deliberately or reject it.' : 'Awaiting your review — nothing is merged until you integrate.'}</div>
+    <div class="integrationActions">
+      <button type="button" class="integrationAct integrationReview">Review changes</button>
+      <button type="button" class="integrationAct integrationIntegrate">Integrate</button>
+      <button type="button" class="integrationAct integrationReject danger">Reject</button>
+    </div>
+  </div>`;
+}
+
+function integrationFailedHtml(e) {
+  const meta = e.meta || {};
+  const wt = esc(meta.worktreeId || '');
+  const summary = esc(diffSummaryLine(meta));
+  const err = esc(meta.error || e.text || 'Integration failed');
+  return `<div class="integrationCard integrationFailed" data-worktree-id="${wt}">
+    <div class="integrationHead"><span class="integrationTitle">Integration failed</span></div>
+    <div class="integrationSummary">${summary}</div>
+    <div class="integrationNote">${err} — worktree retained for review.</div>
+    <div class="integrationActions">
+      <button type="button" class="integrationAct integrationReview">Review changes</button>
+      <button type="button" class="integrationAct integrationIntegrate">Retry integrate</button>
+      <button type="button" class="integrationAct integrationReject danger">Reject</button>
+    </div>
+  </div>`;
+}
+
 function render(e) {
   const f = feedEl();
   if (f.querySelector('.empty')) f.innerHTML = '';
@@ -1459,6 +2183,69 @@ function render(e) {
     return;
   }
   if (kind === 'system') {
+    if (type === 'task-project' && meta && meta.projectId) {
+      tasksUi.projectId = meta.projectId;
+      scheduleTasksRefresh();
+    }
+    if (type === 'pending-integration') {
+      const el = appendHTML(pendingIntegrationHtml(e));
+      wireIntegrationCard(el, e.meta || {});
+      setRunActive(false);
+      stopActivityPoll();
+      scheduleTasksRefresh();
+      return;
+    }
+    if (type === 'cancelled-worktree') {
+      const el = appendHTML(pendingIntegrationHtml(e));
+      wireIntegrationCard(el, e.meta || {});
+      setRunActive(false);
+      stopActivityPoll();
+      return;
+    }
+    if (type === 'integration-failed') {
+      const el = appendHTML(integrationFailedHtml(e));
+      wireIntegrationCard(el, e.meta || {});
+      return;
+    }
+    if (type === 'integrated') {
+      resolveIntegrationCards(meta && meta.worktreeId, 'integrated');
+      appendHTML(
+        `<div class="status integrationStatus">✓ ${esc(text || 'Changes integrated')}</div>`
+      );
+      loadChanges();
+      scheduleTasksRefresh();
+      return;
+    }
+    if (type === 'rejected') {
+      resolveIntegrationCards(meta && meta.worktreeId, 'rejected');
+      appendHTML(
+        `<div class="status integrationStatus muted">— ${esc(text || 'Worktree rejected')}</div>`
+      );
+      loadChanges();
+      scheduleTasksRefresh();
+      return;
+    }
+    if (type === 'failed-step') {
+      const err = (meta && meta.error) || text;
+      appendHTML(
+        `<div class="status stepFailed">— ${esc(text)} ✗<div class="integrationErr">${esc(err)}</div></div>`
+      );
+      if (meta && meta.worktreeId) {
+        const el = appendHTML(
+          `<div class="integrationCard integrationFailedStep" data-worktree-id="${esc(meta.worktreeId)}">
+            <div class="integrationNote">Failed step left an isolated worktree (${esc(meta.worktreeId)}). Reject it to discard.</div>
+            <div class="integrationActions">
+              <button type="button" class="integrationAct integrationReview">Review changes</button>
+              <button type="button" class="integrationAct integrationReject danger">Reject worktree</button>
+            </div>
+          </div>`
+        );
+        wireIntegrationCard(el);
+      }
+      setRunActive(false);
+      stopActivityPoll();
+      return;
+    }
     if (type === 'error') {
       maybeRateLimitError(actor, text);
       setRunActive(false);
@@ -1499,6 +2286,7 @@ function render(e) {
         if (elapsed) elapsed.remove();
       });
       const failed = !!(meta && meta.failed);
+      const paused = !!(meta && meta.paused);
       const elapsedStr = (meta && meta.elapsedStr) || '';
       const usage = meta && meta.usage;
       const statParts = [];
@@ -1510,8 +2298,9 @@ function render(e) {
       const statsHtml = statParts.length
         ? ` <span class="stepStats">${statParts.join(' · ')}</span>`
         : '';
+      const marker = failed ? '✗' : paused ? '⏸' : '✓';
       appendHTML(
-        `<div class="status${failed ? ' stepFailed' : ''}">— ${esc(text)} ${failed ? '✗' : '✓'}${statsHtml}</div>`
+        `<div class="status${failed ? ' stepFailed' : ''}${paused ? ' stepPaused' : ''}">— ${esc(text)} ${marker}${statsHtml}</div>`
       );
       finalizeActor(actor);
       setRunActive(false);
@@ -1684,7 +2473,7 @@ async function stopRun() {
 $('#stop').onclick = stopRun;
 
 // ---------- usage ----------
-const PROVIDER_ORDER = ['claude', 'codex', 'grok', 'gemini'];
+const PROVIDER_ORDER = ['claude', 'codex', 'grok', 'antigravity', 'gemini'];
 function stripTrailingZero(v) {
   return v.toFixed(1).replace(/\.0$/, '');
 }
@@ -1701,13 +2490,18 @@ function formatResetsIn(resetsAt) {
   const m = Math.floor((sec % 3600000) / 60000);
   return `${h}h ${m}m`;
 }
+function usageSourceLabel(source) {
+  const labels = {
+    reported: 'provider-reported',
+    estimated: 'estimated',
+    observed: 'observed',
+    none: 'no usage yet',
+  };
+  return labels[source] || 'observed';
+}
 function renderUsage(data) {
   const providers = (data && data.providers) || {};
-  const actors = PROVIDER_ORDER.filter(
-    (a) =>
-      providers[a] &&
-      (providers[a].calls > 0 || providers[a].tokensIn > 0 || providers[a].tokensOut > 0)
-  );
+  const actors = PROVIDER_ORDER.filter((a) => providers[a]);
   if (!actors.length) {
     $('#usageRows').innerHTML = '<div class="usageEmpty">No usage recorded yet.</div>';
     return;
@@ -1717,6 +2511,9 @@ function renderUsage(data) {
       const p = providers[actor];
       const color = COLOR[actor] || 'var(--text)';
       let stats = `${p.calls} call${p.calls === 1 ? '' : 's'} · in ${humanTokens(p.tokensIn)} · out ${humanTokens(p.tokensOut)}`;
+      if (actor === 'grok' && p.tokensIn > 0 && p.tokensOut === 0)
+        stats = `${p.calls} call${p.calls === 1 ? '' : 's'} · context ${humanTokens(p.tokensIn)}`;
+      stats += ` <span class="usageSource ${esc(p.source || 'observed')}">${esc(usageSourceLabel(p.source))}</span>`;
       if (p.costUsd > 0) stats += ` · <span class="cost">$${p.costUsd.toFixed(4)}</span>`;
       let limit = '';
       const isLimited =
@@ -1958,7 +2755,10 @@ async function pickFolder() {
     if (r.cancelled) return;
     if (r.error) {
       if (r.fallback) {
-        notify('Native folder picker is unavailable here. Using in-app browser.', 'warn');
+        notify(
+          'Native folder picker is unavailable. Use the folder browser or paste a path.',
+          'warn'
+        );
         return openFs();
       }
       return notify(r.error);
@@ -1977,6 +2777,7 @@ async function openFs(p) {
   fsCur = d.path;
   fsCurIsRepo = !!d.isRepo;
   $('#fsPath').textContent = d.path;
+  $('#fsManualPath').value = d.path || '';
   $('#fsUp').disabled = !d.parent;
   $('#fsWarn').textContent = d.error
     ? d.error
@@ -2002,6 +2803,18 @@ $('#fsCancel').onclick = () => $('#fsModal').classList.remove('show');
 $('#fsUse').onclick = async () => {
   if (await addWorkspacePath(fsCur)) $('#fsModal').classList.remove('show');
 };
+$('#fsManualUse').onclick = async () => {
+  const folderPath = $('#fsManualPath').value.trim();
+  if (!folderPath) return notify('Paste a folder path first.');
+  if (await addWorkspacePath(folderPath, { warnNonRepo: true })) {
+    $('#fsModal').classList.remove('show');
+  }
+};
+$('#fsManualPath').addEventListener('keydown', async (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  $('#fsManualUse').click();
+});
 
 // ---------- teams ----------
 async function loadSkills() {
@@ -2020,6 +2833,14 @@ function modelOptions(selected) {
       )
       .join('');
   }).join('');
+}
+function refreshTeamModelSelects() {
+  const selects = [...document.querySelectorAll('.memberModel')];
+  for (const select of selects) {
+    const selected = select.value;
+    select.innerHTML = modelOptions(null);
+    if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+  }
 }
 function skillOptions(selectedId) {
   return (
@@ -2212,7 +3033,7 @@ function collectTeamFromModal() {
 }
 async function loadTeams() {
   TEAMS = await api('/api/teams');
-  const active = localStorage.getItem(ACTIVE_TEAM_KEY);
+  const active = PROFILE_SETTINGS.activeTeamId || localStorage.getItem(ACTIVE_TEAM_KEY);
   const valid = TEAMS.some((t) => t.id === active);
   $('#teamPick').innerHTML =
     '<option value="">— none —</option>' +
@@ -2223,12 +3044,14 @@ async function loadTeams() {
   else if (TEAMS.length) {
     $('#teamPick').value = TEAMS[0].id;
     localStorage.setItem(ACTIVE_TEAM_KEY, TEAMS[0].id);
+    saveProfileSettings({ activeTeamId: TEAMS[0].id });
   }
   updateDelegateButton();
 }
 function setActiveTeam(id) {
   if (id) localStorage.setItem(ACTIVE_TEAM_KEY, id);
   else localStorage.removeItem(ACTIVE_TEAM_KEY);
+  saveProfileSettings({ activeTeamId: id || '' });
   updateDelegateButton();
 }
 function activeTeam() {
@@ -2241,17 +3064,19 @@ function updateDelegateButton() {
   $('#splitCaret').disabled = state.activeRun;
   $('#delegate').disabled = state.activeRun;
   if (!on) hidePlan();
+  renderPreflight();
 }
 function memberName(team, memberIndex) {
   const m = team && team.members && team.members[memberIndex];
   if (!m) return `member ${memberIndex}`;
   return `${m.adapter}${m.role ? ' · ' + m.role : ''}`;
 }
-function showPlan(steps) {
+function showPlan(steps, projectId) {
   const team = activeTeam();
-  planDraft = { teamId: team.id, steps };
+  planDraft = { teamId: team.id, steps, projectId: projectId || null };
   $('#planBox').innerHTML =
     `<div class="planTitle">Review team delegation</div>` +
+    `<div class="planSteps">` +
     steps
       .map(
         (s, i) => `<div class="planStep" data-i="${i}" data-member="${s.memberIndex}">
@@ -2260,10 +3085,12 @@ function showPlan(steps) {
     </div>`
       )
       .join('') +
+    `</div>` +
     `<div class="planActions"><button class="btn ghost" id="planCancel" title="Cancel team delegation">Cancel</button><button class="btn primary" id="planApprove" title="Approve and run these delegated tasks">Approve</button></div>`;
   $('#planBox').classList.add('show');
   $('#planCancel').onclick = hidePlan;
   $('#planApprove').onclick = approvePlan;
+  $('#planBox').scrollIntoView({ block: 'nearest' });
 }
 function hidePlan() {
   planDraft = null;
@@ -2272,13 +3099,11 @@ function hidePlan() {
 }
 async function delegateToTeam() {
   if (!state.ws) return notify('Add/select a workspace first');
-  if (activity.notRepo)
-    return notify(
-      'Team delegation needs a git workspace (so each member’s edits are reviewable). This folder isn’t a git repo.'
-    );
   if (state.activeRun) return notify('A run is already active in this session.');
   const team = activeTeam();
   if (!team) return notify('Select a team first');
+  const blocked = teamBlocker(team);
+  if (blocked) return notify(blocked);
   const prompt = $('#prompt').value.trim();
   if (!prompt) return;
   await ensureSession();
@@ -2295,6 +3120,7 @@ async function delegateToTeam() {
         prompt,
         contextMode,
         contextProvider,
+        mode: state.mode,
       }),
     });
     if (r.cancelled) {
@@ -2306,8 +3132,13 @@ async function delegateToTeam() {
       return notify(r.error);
     }
     $('#prompt').value = '';
-    showPlan(r.steps || []);
+    if (r.projectId) {
+      tasksUi.projectId = r.projectId;
+      tasksUi.selectedTaskId = null;
+    }
+    showPlan(r.steps || [], r.projectId);
     setRunActive(false);
+    loadTasksPanel();
   } catch (_e) {
     setRunActive(false);
     notify('Unable to create team plan.');
@@ -2318,10 +3149,16 @@ async function delegateToTeam() {
 async function approvePlan() {
   if (!planDraft) return;
   if (state.activeRun) return notify('A run is already active in this session.');
+  if (state.mode === 'edit' && activity.notRepo)
+    return notify(
+      'Approving edit-capable team work needs a git workspace. Team planning works here, but edits need git for review and recovery.'
+    );
   const rows = [...$('#planBox').querySelectorAll('.planStep')];
-  const steps = rows.map((row) => ({
+  const steps = rows.map((row, index) => ({
     memberIndex: Number(row.dataset.member),
     task: row.querySelector('.planTask').value.trim(),
+    acceptanceCriteria: planDraft.steps[index].acceptanceCriteria,
+    dependencies: planDraft.steps[index].dependencies,
   }));
   if (steps.some((s) => !s.task)) return notify('Every step needs a task.');
   $('#planApprove').disabled = true;
@@ -2334,7 +3171,9 @@ async function approvePlan() {
         ws: state.ws,
         sid: state.sid,
         teamId: planDraft.teamId,
+        projectId: planDraft.projectId,
         steps,
+        mode: state.mode,
         contextMode,
         contextProvider,
       }),
@@ -2347,6 +3186,7 @@ async function approvePlan() {
     hidePlan();
     startActivityPoll();
     loadUsage();
+    loadTasksPanel();
   } catch (e) {
     $('#planApprove').disabled = false;
     setRunActive(false);
@@ -2410,8 +3250,10 @@ $('#teamDelete').onclick = async () => {
   if (!editingTeam || !editingTeam.id) return;
   if (!confirm('Delete this team?')) return;
   await api('/api/teams?id=' + encodeURIComponent(editingTeam.id), { method: 'DELETE' });
-  if (localStorage.getItem(ACTIVE_TEAM_KEY) === editingTeam.id)
+  if (localStorage.getItem(ACTIVE_TEAM_KEY) === editingTeam.id) {
     localStorage.removeItem(ACTIVE_TEAM_KEY);
+    saveProfileSettings({ activeTeamId: '' });
+  }
   $('#teamModal').classList.remove('show');
   await loadTeams();
 };

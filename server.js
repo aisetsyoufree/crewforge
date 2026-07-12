@@ -8,9 +8,15 @@
  *   GET  /styles.css               dashboard styles
  *   GET  /app.js                   dashboard client script
  *   GET  /api/catalog              available models/adapters
+ *   GET  /api/catalog/refresh      refresh model lists from local CLIs
  *   GET  /api/health               provider readiness checks
  *   GET  /api/context-saver        context saver and optional Headroom status
+ *   GET  /api/profile              local profile settings
+ *   POST /api/profile {settings}   update local profile settings
+ *   GET  /api/profile/export       export local profile backup
+ *   POST /api/profile/import       import local profile backup
  *   GET  /api/fs?path=             folder browser (list subdirectories)
+ *   GET  /api/file?ws=&path=       read a workspace file for preview
  *   POST /api/fs/pick-folder       open native folder picker when supported
  *   GET  /api/workspaces           saved workspaces
  *   POST /api/workspaces {path}    add a workspace
@@ -19,6 +25,9 @@
  *   POST /api/sessions {ws}        create a session
  *   GET  /api/changes?ws=          changed files for a workspace
  *   GET  /api/diff?ws=             git diff for a workspace
+ *   GET  /api/worktree/pending?ws=&worktreeId=  inspect pending Crew Forge worktree
+ *   POST /api/worktree/integrate {ws,sid,worktreeId}  apply after preflight
+ *   POST /api/worktree/reject {ws,sid,worktreeId}   discard pending worktree
  *   GET  /api/stream?ws=&sid=&off= SSE live event stream (replays history)
  *   POST /api/run {ws,sid,adapter,model,mode,prompt,role}  run one agent turn
  *   POST /api/review {ws,sid,reviewer,reviewerModel}        cross-model diff review
@@ -31,6 +40,9 @@
  *   DELETE /api/skills?id=           delete/reset a local crew skill
  *   POST /api/plan {ws,sid,teamId,prompt}       propose team steps
  *   POST /api/approve {ws,sid,teamId,steps}     run approved team steps
+ *   GET  /api/projects?ws=&sid=                 list tracked projects for a session
+ *   GET  /api/projects/detail?projectId=        project + task summary (ws/sid ownership)
+ *   GET  /api/tasks/detail?projectId=&taskId=   single tracked task detail
  *   GET  /api/usage                              observed token usage across sessions
  *   GET  /api/keys                               locally stored provider key status
  *   POST /api/keys {provider,key}                save provider API key
@@ -78,10 +90,17 @@ const watcher = require('./lib/watcher');
 const teams = require('./lib/teams');
 const orchestrator = require('./lib/orchestrator');
 const contextSaver = require('./lib/context_saver');
+const modelDiscovery = require('./lib/model_discovery');
 const skills = require('./lib/skills');
 const usage = require('./lib/usage');
+const { guardedEmitter, withWorkspaceInstruction } = require('./lib/workspace_guard');
+const worktree = require('./lib/worktree');
+const { finishDirectRun } = require('./lib/run_outcome');
+const { continuationFromPending, findUnresolvedPending } = require('./lib/pending_integration');
 const { buildReviewPrompt } = require('./lib/review');
 const keys = require('./lib/keys');
+const tasks = require('./lib/tasks');
+const taskTracker = require('./lib/task_tracker');
 const { normalizeEffort, safeCliEnv } = require('./adapters/base');
 
 const PORT = Number(process.argv[2]) || 4178;
@@ -97,14 +116,17 @@ const STATIC_ASSETS = {
   },
 };
 const KEY_ENV = { gemini: 'GEMINI_API_KEY' };
-const CLI_BINS = { claude: 'claude', codex: 'codex', grok: 'grok' };
-const CLI_MIN_VERSION = { grok: '0.2.72' };
+const CLI_BINS = { claude: 'claude', codex: 'codex', grok: 'grok', antigravity: 'agy' };
+const CLI_MIN_VERSION = { grok: '0.2.72', antigravity: '1.1.1' };
 const CLI_LOGIN = {
   claude: 'claude login',
   codex: 'codex login',
   grok: 'grok login --device-auth',
+  antigravity: 'Sign in with the Antigravity app, then run: agy models',
 };
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_PROFILE_IMPORT_BYTES = 25 * 1024 * 1024;
+const MAX_FILE_PREVIEW_BYTES = 2 * 1024 * 1024;
 const RUN_TIMEOUT_MS = Number(process.env.CREW_FORGE_RUN_TIMEOUT_MS || 15 * 60 * 1000);
 const activeRuns = new Map();
 
@@ -302,6 +324,12 @@ const reject = (res, code, message) => json(res, code, { error: message });
 function cryptoRandomToken() {
   return crypto.randomBytes(24).toString('base64url');
 }
+function safeTokenEqual(actual, expected) {
+  if (typeof actual !== 'string' || typeof expected !== 'string') return false;
+  const a = Buffer.from(actual);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 function parseCookies(header) {
   const out = {};
   for (const part of String(header || '').split(';')) {
@@ -314,14 +342,16 @@ function parseCookies(header) {
   return out;
 }
 function hasSessionCookie(req) {
-  return parseCookies(req.headers.cookie)[SESSION_COOKIE] === SESSION_TOKEN;
+  return safeTokenEqual(parseCookies(req.headers.cookie)[SESSION_COOKIE], SESSION_TOKEN);
 }
 function hasRequestToken(req, url) {
   if (!AUTH_TOKEN_ENV) return false;
   const bearer = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
   const headerToken = req.headers['x-crewforge-token'];
   const queryToken = url && url.searchParams.get('token');
-  return [bearer && bearer[1], headerToken, queryToken].some((token) => token === AUTH_TOKEN_ENV);
+  return [bearer && bearer[1], headerToken, queryToken].some((token) =>
+    safeTokenEqual(token, AUTH_TOKEN_ENV)
+  );
 }
 function sessionCookieHeader() {
   let h = `${SESSION_COOKIE}=${encodeURIComponent(SESSION_TOKEN)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MAX_AGE}`;
@@ -340,7 +370,7 @@ function safeErrMsg(e) {
 // Token-authenticated (Bearer/header/query) clients are not cookie-based, so exempt.
 function passesCsrf(req, url) {
   if (hasRequestToken(req, url)) return true;
-  return req.headers['x-csrf-token'] === CSRF_TOKEN;
+  return safeTokenEqual(req.headers['x-csrf-token'], CSRF_TOKEN);
 }
 const isJsonRequest = (req) => {
   const contentType = String(req.headers['content-type'] || '').toLowerCase();
@@ -350,15 +380,16 @@ const hasTrustedFetchMetadata = (req) => {
   const site = String(req.headers['sec-fetch-site'] || '').toLowerCase();
   return !site || site === 'same-origin' || site === 'none';
 };
-const body = (req, res) =>
+const body = (req, res, options = {}) =>
   new Promise((r) => {
+    const maxBytes = options.maxBytes || MAX_BODY_BYTES;
     let b = '';
     let size = 0;
     let done = false;
     req.on('data', (c) => {
       if (done) return;
       size += c.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         done = true;
         send(
           res,
@@ -458,6 +489,22 @@ function validId(res, name, value) {
   invalidId(res, name);
   return false;
 }
+const WORKTREE_ID_RE = /^[a-zA-Z0-9_-]+$/;
+function validWorktreeId(res, value) {
+  const id = String(value || '').trim();
+  if (id && WORKTREE_ID_RE.test(id)) return id;
+  invalidId(res, 'worktreeId');
+  return null;
+}
+function workspaceForApi(res, wsId) {
+  if (!validId(res, 'ws', wsId)) return null;
+  const wsObj = store.getWorkspace(wsId);
+  if (!wsObj) {
+    json(res, 400, { error: 'unknown workspace' });
+    return null;
+  }
+  return wsObj;
+}
 
 function runKey(ws, sid) {
   return `${ws}/${sid}`;
@@ -517,6 +564,102 @@ async function buildContext(wsId, sid, newPrompt, options = {}) {
     });
   }
   return result.prompt;
+}
+
+function resumePendingContinuation({ ws, sid, wsObj, pendingEvent }) {
+  const continuation = continuationFromPending(pendingEvent);
+  if (!continuation) {
+    if (pendingEvent && pendingEvent.type === 'pending-integration') {
+      store.append(ws, sid, {
+        kind: 'system',
+        actor: 'team',
+        type: 'continuation-failed',
+        text: 'Changes were integrated, but the remaining team plan could not be resumed',
+        meta: { done: true, failed: true },
+      });
+      return { resumed: false, continuationFailed: true };
+    }
+    return { resumed: false };
+  }
+
+  if (!continuation.remainingSteps.length) {
+    store.append(ws, sid, {
+      kind: 'system',
+      actor: 'team',
+      type: 'status',
+      text: 'Team delegation finished',
+      meta: { done: true },
+    });
+    return { resumed: false, complete: true };
+  }
+
+  const team = continuation.team;
+  try {
+    if (!team.members.length) throw new Error('stored team has no members');
+    for (const member of team.members) {
+      if (!adapters.adapters[member.adapter]) {
+        throw new Error(`stored team references unknown adapter: ${member.adapter}`);
+      }
+    }
+    orchestrator.validateSteps(continuation.remainingSteps, team.members.length);
+  } catch (error) {
+    store.append(ws, sid, {
+      kind: 'system',
+      actor: 'team',
+      type: 'continuation-failed',
+      text: `Changes were integrated, but continuation validation failed: ${safeErrMsg(error)}`,
+      meta: { done: true, failed: true },
+    });
+    return { resumed: false, continuationFailed: true };
+  }
+
+  const run = startRun(ws, sid);
+  if (!run) {
+    store.append(ws, sid, {
+      kind: 'system',
+      actor: 'team',
+      type: 'continuation-failed',
+      text: 'Changes were integrated, but another run is already active',
+      meta: { done: true, failed: true },
+    });
+    return { resumed: false, continuationFailed: true };
+  }
+
+  store.append(ws, sid, {
+    kind: 'system',
+    actor: 'team',
+    type: 'status',
+    text: `Resuming team delegation at step ${continuation.nextStepOffset + 1}/${continuation.totalSteps}`,
+    meta: { running: true, resumed: true, step: continuation.nextStepOffset + 1 },
+  });
+  const resumeProject = taskTracker.findProjectForSession(ws, sid);
+  orchestrator
+    .runApproved({
+      adapters,
+      buildContext,
+      store,
+      team,
+      steps: continuation.remainingSteps,
+      approvalMode: continuation.approvalMode,
+      ws,
+      sid,
+      cwd: wsObj.path,
+      signal: run.controller.signal,
+      stepOffset: continuation.nextStepOffset,
+      totalSteps: continuation.totalSteps,
+      tracking: taskTracker.buildOrchestratorTracking(resumeProject && resumeProject.id),
+    })
+    .catch((error) => {
+      if (run.controller.signal.aborted) return;
+      store.append(ws, sid, {
+        kind: 'system',
+        actor: 'team',
+        type: 'error',
+        text: safeErrMsg(error),
+      });
+    })
+    .finally(() => finishRun(run.key, run.controller));
+  return { resumed: true };
 }
 
 async function commandExists(bin) {
@@ -615,6 +758,11 @@ function isGitRepoPath(absPath) {
   return fs.existsSync(path.join(absPath, '.git'));
 }
 
+function looksBinary(buf) {
+  const sample = buf.subarray(0, Math.min(buf.length, 8192));
+  return sample.includes(0);
+}
+
 async function providerHealth() {
   return Promise.all(
     adapters.catalog().map(async (a) => {
@@ -683,9 +831,45 @@ const server = http.createServer(async (req, res) => {
       );
     }
     if (req.method === 'GET' && p === '/api/catalog') return json(res, 200, adapters.catalog());
+    if (req.method === 'GET' && p === '/api/catalog/refresh')
+      return json(res, 200, await modelDiscovery.refreshCatalog(adapters.catalog()));
     if (req.method === 'GET' && p === '/api/health') return json(res, 200, await providerHealth());
     if (req.method === 'GET' && p === '/api/context-saver')
-      return json(res, 200, contextSaver.status());
+      return json(res, 200, await contextSaver.status());
+    if (req.method === 'GET' && p === '/api/profile') return json(res, 200, store.getProfile());
+    if (req.method === 'POST' && p === '/api/profile') {
+      const data = await body(req, res);
+      if (!data) return;
+      return json(res, 200, store.saveProfileSettings(data.settings || {}));
+    }
+    if (req.method === 'GET' && p === '/api/profile/export') {
+      const filename = `crewforge-profile-${new Date().toISOString().slice(0, 10)}.json`;
+      return send(
+        res,
+        200,
+        {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+        },
+        JSON.stringify(store.exportProfile(), null, 2)
+      );
+    }
+    if (req.method === 'POST' && p === '/api/profile/import') {
+      const data = await body(req, res, { maxBytes: MAX_PROFILE_IMPORT_BYTES });
+      if (!data) return;
+      try {
+        return json(
+          res,
+          200,
+          store.importProfile(data.profile || data, {
+            workspaceAllowed: (workspacePath) => !sensitivePathReason(workspacePath),
+          })
+        );
+      } catch (e) {
+        return json(res, 400, { error: safeErrMsg(e) });
+      }
+    }
 
     if (req.method === 'GET' && p === '/ONBOARDING.md') {
       return send(
@@ -774,17 +958,70 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    if (req.method === 'POST' && p === '/api/fs/pick-folder') {
+    if (req.method === 'GET' && p === '/api/file') {
+      const ws = u.searchParams.get('ws');
+      const requested = u.searchParams.get('path');
+      if (!validId(res, 'ws', ws)) return;
+      if (!requested) return json(res, 400, { error: 'path required' });
+      const wsObj = store.getWorkspace(ws);
+      if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
+      const candidate = path.resolve(requested);
       try {
-        const picked = await pickNativeFolder();
-        assertSafePath(path.resolve(picked));
-        return json(res, 200, { path: picked, isRepo: isGitRepoPath(picked) });
+        const root = fs.realpathSync(path.resolve(wsObj.path));
+        if (!isInsidePath(candidate, path.resolve(wsObj.path))) {
+          return json(res, 400, { error: 'file is outside workspace' });
+        }
+        const abs = fs.realpathSync(candidate);
+        if (!isInsidePath(abs, root)) {
+          return json(res, 400, { error: 'file is outside workspace' });
+        }
+        assertSafePath(abs, { allowHomeRoot: true });
+        const stat = fs.statSync(abs);
+        if (!stat.isFile()) return json(res, 400, { error: 'path is not a file' });
+        if (stat.size > MAX_FILE_PREVIEW_BYTES) {
+          return json(res, 413, {
+            error: `file is too large to preview (${Math.ceil(stat.size / 1024)} KB)`,
+            path: abs,
+            size: stat.size,
+          });
+        }
+        const buf = fs.readFileSync(abs);
+        if (looksBinary(buf)) {
+          return json(res, 415, {
+            error: 'binary files cannot be previewed',
+            path: abs,
+            size: stat.size,
+          });
+        }
+        return json(res, 200, {
+          path: abs,
+          name: path.basename(abs),
+          relativePath: path.relative(root, abs).replace(/\\/g, '/'),
+          size: stat.size,
+          content: buf.toString('utf8'),
+        });
+      } catch (e) {
+        return json(res, 400, { error: safeErrMsg(e), path: candidate });
+      }
+    }
+
+    if (req.method === 'POST' && p === '/api/fs/pick-folder') {
+      let picked = '';
+      try {
+        picked = await pickNativeFolder();
       } catch (e) {
         const message = String((e && (e.stderr || e.message)) || e);
         if (/user canceled/i.test(message)) return json(res, 200, { cancelled: true });
-        if (e && e.code === 'UNSUPPORTED_PLATFORM')
-          return json(res, 501, { error: safeErrMsg(e), fallback: true });
-        return json(res, 400, { error: message.trim() || 'Unable to choose folder' });
+        return json(res, e && e.code === 'UNSUPPORTED_PLATFORM' ? 501 : 400, {
+          error: message.trim() || 'Unable to choose folder',
+          fallback: true,
+        });
+      }
+      try {
+        assertSafePath(path.resolve(picked));
+        return json(res, 200, { path: picked, isRepo: isGitRepoPath(picked) });
+      } catch (e) {
+        return json(res, 400, { error: safeErrMsg(e) });
       }
     }
 
@@ -850,6 +1087,132 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    if (req.method === 'GET' && p === '/api/worktree/pending') {
+      const ws = u.searchParams.get('ws');
+      const worktreeId = validWorktreeId(res, u.searchParams.get('worktreeId'));
+      if (!worktreeId) return;
+      const wsObj = workspaceForApi(res, ws);
+      if (!wsObj) return;
+      if (!isGitRepoPath(wsObj.path))
+        return json(res, 400, { error: 'workspace is not a git repository' });
+      try {
+        const info = worktree.inspect(wsObj.path, worktreeId);
+        return json(res, 200, info);
+      } catch (e) {
+        return json(res, 400, { error: safeErrMsg(e) });
+      }
+    }
+
+    if (req.method === 'POST' && p === '/api/worktree/integrate') {
+      const data = await body(req, res);
+      if (!data) return;
+      const { ws, sid } = data;
+      const worktreeId = validWorktreeId(res, data.worktreeId);
+      if (!worktreeId) return;
+      if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
+      const wsObj = workspaceForApi(res, ws);
+      if (!wsObj) return;
+      if (!isGitRepoPath(wsObj.path))
+        return json(res, 400, { error: 'workspace is not a git repository' });
+
+      const pendingEvent = findUnresolvedPending(store.readEvents(ws, sid), worktreeId);
+      if (!pendingEvent) {
+        return json(res, 409, {
+          error: 'worktree is not pending in this session',
+          status: 'not-pending',
+        });
+      }
+
+      let inspectInfo;
+      try {
+        inspectInfo = worktree.inspect(wsObj.path, worktreeId);
+      } catch (e) {
+        return json(res, 400, { error: safeErrMsg(e), status: 'invalid-worktree' });
+      }
+
+      try {
+        worktree.apply(wsObj.path, worktreeId);
+        store.append(ws, sid, {
+          kind: 'system',
+          actor: 'user',
+          type: 'integrated',
+          text: `Integrated team step changes (${worktreeId})`,
+          meta: {
+            worktreeId,
+            branch: inspectInfo.branch,
+            diffSummary: inspectInfo.diffSummary,
+          },
+        });
+        const trackProject = taskTracker.findProjectForWorktree(ws, sid, worktreeId);
+        if (trackProject) taskTracker.onIntegrated(trackProject.id, worktreeId);
+        const continuation = resumePendingContinuation({ ws, sid, wsObj, pendingEvent });
+        return json(res, 200, { status: 'integrated', worktreeId, ...continuation });
+      } catch (e) {
+        const message = safeErrMsg(e);
+        const trackProject = taskTracker.findProjectForWorktree(ws, sid, worktreeId);
+        if (trackProject) taskTracker.onIntegrationFailed(trackProject.id, worktreeId, message);
+        store.append(ws, sid, {
+          kind: 'system',
+          actor: 'user',
+          type: 'integration-failed',
+          text: `Integration failed for ${worktreeId}`,
+          meta: {
+            worktreeId,
+            branch: inspectInfo.branch,
+            diffSummary: inspectInfo.diffSummary,
+            error: message,
+          },
+        });
+        return json(res, 409, {
+          status: 'integration-failed',
+          worktreeId,
+          error: message,
+        });
+      }
+    }
+
+    if (req.method === 'POST' && p === '/api/worktree/reject') {
+      const data = await body(req, res);
+      if (!data) return;
+      const { ws, sid } = data;
+      const worktreeId = validWorktreeId(res, data.worktreeId);
+      if (!worktreeId) return;
+      if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
+      const wsObj = workspaceForApi(res, ws);
+      if (!wsObj) return;
+      if (!isGitRepoPath(wsObj.path))
+        return json(res, 400, { error: 'workspace is not a git repository' });
+
+      const pendingEvent = findUnresolvedPending(store.readEvents(ws, sid), worktreeId);
+      if (!pendingEvent) {
+        return json(res, 409, {
+          error: 'worktree is not pending in this session',
+          status: 'not-pending',
+        });
+      }
+
+      try {
+        worktree.reject(wsObj.path, worktreeId);
+        const trackProject = taskTracker.findProjectForWorktree(ws, sid, worktreeId);
+        if (trackProject) {
+          taskTracker.onRejected(trackProject.id, worktreeId, {
+            reason: data.reason,
+            asChangesRequested: data.asChangesRequested === true,
+          });
+        }
+        store.append(ws, sid, {
+          kind: 'system',
+          actor: 'user',
+          type: 'rejected',
+          text: `Rejected pending worktree ${worktreeId}`,
+          meta: { worktreeId, rejected: true },
+        });
+        return json(res, 200, { status: 'rejected', worktreeId });
+      } catch (e) {
+        return json(res, 400, { error: safeErrMsg(e) });
+      }
+    }
+
     if (req.method === 'POST' && p === '/api/stop') {
       const data = await body(req, res);
       if (!data) return;
@@ -866,6 +1229,19 @@ const server = http.createServer(async (req, res) => {
         text: 'Run stopped by user',
         meta: { done: true },
       });
+      const trackProject = taskTracker.findProjectForSession(ws, sid);
+      if (trackProject) {
+        const active = tasks
+          .listTasks(trackProject.id)
+          .find((task) => task.status === 'in_progress' || task.status === 'running');
+        if (active && active.planStepIndex !== null) {
+          taskTracker.onRunAborted(trackProject.id, active.planStepIndex, {
+            displayStep: active.planStepIndex + 1,
+            worktreeId: active.worktreeId,
+            partial: !!active.worktreeId,
+          });
+        }
+      }
       return json(res, 200, { ok: true });
     }
 
@@ -891,7 +1267,7 @@ const server = http.createServer(async (req, res) => {
 
       const changes = watcher.getChanges(wsObj.path);
       const fileCount = (changes.files || []).length;
-      const prompt = buildReviewPrompt(diff);
+      const prompt = withWorkspaceInstruction(buildReviewPrompt(diff), wsObj.path, 'plan');
       const fullPrompt = await buildContext(ws, sid, prompt, {
         contextMode,
         provider: contextProvider,
@@ -918,7 +1294,7 @@ const server = http.createServer(async (req, res) => {
             mode: 'plan',
             signal: run.controller.signal,
           },
-          (e) =>
+          guardedEmitter(wsObj.path, 'plan', (e) =>
             store.append(ws, sid, {
               kind: 'agent',
               actor: reviewer,
@@ -928,26 +1304,19 @@ const server = http.createServer(async (req, res) => {
               text: e.text,
               meta: e.meta,
             })
+          )
         )
-        .then(() => {
-          if (!run.controller.signal.aborted) {
-            store.append(ws, sid, {
-              kind: 'system',
-              actor: reviewer,
-              type: 'status',
-              text: `${reviewer} review finished`,
-              meta: { done: true },
-            });
-          }
+        .then((result) => {
+          finishDirectRun(store, ws, sid, reviewer, {
+            aborted: run.controller.signal.aborted,
+            result,
+          });
         })
         .catch((err) => {
-          if (!run.controller.signal.aborted)
-            store.append(ws, sid, {
-              kind: 'system',
-              actor: reviewer,
-              type: 'error',
-              text: String(err),
-            });
+          finishDirectRun(store, ws, sid, reviewer, {
+            aborted: run.controller.signal.aborted,
+            thrown: err,
+          });
         })
         .finally(() => finishRun(run.key, run.controller));
 
@@ -972,7 +1341,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && p === '/api/usage') {
-      return json(res, 200, usage.aggregate(path.join(ROOT, 'data', 'sessions')));
+      return json(
+        res,
+        200,
+        usage.aggregate(
+          path.join(ROOT, 'data', 'sessions'),
+          adapters.catalog().map((adapter) => adapter.id)
+        )
+      );
     }
 
     if (req.method === 'GET' && p === '/api/teams') return json(res, 200, teams.listTeams());
@@ -1023,17 +1399,52 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
+    if (req.method === 'GET' && p === '/api/projects') {
+      const ws = u.searchParams.get('ws');
+      const sid = u.searchParams.get('sid');
+      if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
+      if (!store.getWorkspace(ws)) return json(res, 400, { error: 'unknown workspace' });
+      return json(res, 200, { projects: taskTracker.listProjectsForSession(ws, sid) });
+    }
+
+    if (req.method === 'GET' && p === '/api/projects/detail') {
+      const ws = u.searchParams.get('ws');
+      const sid = u.searchParams.get('sid');
+      const projectId = u.searchParams.get('projectId');
+      if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
+      if (!validId(res, 'projectId', projectId)) return;
+      const project = tasks.getProject(projectId);
+      if (!project || !tasks.projectOwnedBy(project, ws, sid))
+        return json(res, 404, { error: 'project not found' });
+      const view = taskTracker.projectView(projectId);
+      return json(res, 200, view);
+    }
+
+    if (req.method === 'GET' && p === '/api/tasks/detail') {
+      const ws = u.searchParams.get('ws');
+      const sid = u.searchParams.get('sid');
+      const projectId = u.searchParams.get('projectId');
+      const taskId = u.searchParams.get('taskId');
+      if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
+      if (!validId(res, 'projectId', projectId) || !validId(res, 'taskId', taskId)) return;
+      const project = tasks.getProject(projectId);
+      if (!project || !tasks.projectOwnedBy(project, ws, sid))
+        return json(res, 404, { error: 'project not found' });
+      const task = tasks.getTask(projectId, taskId);
+      if (!task) return json(res, 404, { error: 'task not found' });
+      return json(res, 200, { task: tasks.taskPublicView(task) });
+    }
+
     if (req.method === 'POST' && p === '/api/plan') {
       const data = await body(req, res);
       if (!data) return;
       const { ws, sid, teamId, prompt, contextMode, contextProvider } = data;
+      const planMode = data.mode === 'plan' ? 'plan' : 'edit';
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
       const team = teams.getTeam(teamId);
       if (!team) return json(res, 400, { error: 'unknown team' });
-      if (!isGitRepoPath(wsObj.path))
-        return json(res, 400, { error: 'team execution requires a git workspace' });
       if (!sid) return json(res, 400, { error: 'sid required' });
       if (!prompt) return json(res, 400, { error: 'prompt required' });
       if (!team.members || !team.members.length)
@@ -1064,7 +1475,22 @@ const server = http.createServer(async (req, res) => {
           signal: run.controller.signal,
         });
         if (run.controller.signal.aborted) return json(res, 200, { cancelled: true, steps: [] });
-        return json(res, 200, { steps });
+        const tracked = taskTracker.createProjectFromPlan({
+          ws,
+          sid,
+          team: { ...team, contextMode, contextProvider },
+          prompt,
+          steps,
+          approvalMode: planMode,
+        });
+        store.append(ws, sid, {
+          kind: 'system',
+          actor: 'team',
+          type: 'task-project',
+          text: 'Task tracker project created for team plan',
+          meta: { projectId: tracked.project.id },
+        });
+        return json(res, 200, { steps, projectId: tracked.project.id });
       } catch (e) {
         if (run.controller.signal.aborted) return json(res, 200, { cancelled: true, steps: [] });
         store.append(ws, sid, { kind: 'system', actor: 'team', type: 'error', text: String(e) });
@@ -1084,7 +1510,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/approve') {
       const data = await body(req, res);
       if (!data) return;
-      const { ws, sid, teamId, steps, contextMode, contextProvider } = data;
+      const { ws, sid, teamId, steps, contextMode, contextProvider, projectId } = data;
+      const mode = data.mode === 'plan' ? 'plan' : 'edit';
       if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
       const wsObj = store.getWorkspace(ws);
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
@@ -1093,17 +1520,47 @@ const server = http.createServer(async (req, res) => {
       if (!sid) return json(res, 400, { error: 'sid required' });
       if (!team.members || !team.members.length)
         return json(res, 400, { error: 'team has no members' });
+      if (projectId && !validId(res, 'projectId', projectId)) return;
+      const requestedProject = projectId ? tasks.getProject(projectId) : null;
+      if (
+        projectId &&
+        (!requestedProject ||
+          !tasks.projectOwnedBy(requestedProject, ws, sid) ||
+          requestedProject.teamId !== teamId ||
+          requestedProject.status !== 'planning')
+      ) {
+        return json(res, 400, { error: 'task project does not match this plan' });
+      }
       for (const m of team.members) {
         if (!adapters.adapters[m.adapter])
           return json(res, 400, { error: `unknown adapter: ${m.adapter}` });
       }
       try {
-        orchestrator.validateSteps(steps, team.members.length);
+        const plan = orchestrator.validateSteps(steps, team.members.length);
+        if (requestedProject) {
+          taskTracker.validateAndSyncApprovedPlan(requestedProject.id, team, plan);
+        }
+        const needsGit =
+          mode === 'edit' &&
+          plan.some((step) => {
+            const member = team.members[step.memberIndex];
+            const adapter = member && adapters.adapters[member.adapter];
+            return adapter && adapter.canEdit;
+          });
+        if (needsGit && !isGitRepoPath(wsObj.path)) {
+          return json(res, 400, {
+            error:
+              'Running edit-capable team members requires a git workspace. Team planning works without git; initialize git or assign approved steps to text-only members.',
+          });
+        }
       } catch (e) {
         return json(res, 400, { error: safeErrMsg(e) });
       }
       const run = startRun(ws, sid);
       if (!run) return json(res, 409, { error: 'run already active for this session' });
+
+      const trackProject = requestedProject || taskTracker.findProjectForSession(ws, sid);
+      if (trackProject) taskTracker.onPlanApproved(trackProject.id);
 
       orchestrator
         .runApproved({
@@ -1112,19 +1569,28 @@ const server = http.createServer(async (req, res) => {
           store,
           team: { ...team, contextMode, contextProvider },
           steps,
+          approvalMode: mode,
           ws,
           sid,
           cwd: wsObj.path,
           signal: run.controller.signal,
+          tracking: taskTracker.buildOrchestratorTracking(trackProject && trackProject.id),
         })
         .catch((err) => {
-          if (!run.controller.signal.aborted)
-            store.append(ws, sid, {
-              kind: 'system',
-              actor: 'team',
-              type: 'error',
-              text: String(err),
-            });
+          if (run.controller.signal.aborted) return;
+          store.append(ws, sid, {
+            kind: 'system',
+            actor: 'team',
+            type: 'error',
+            text: String(err),
+          });
+          store.append(ws, sid, {
+            kind: 'system',
+            actor: 'team',
+            type: 'status',
+            text: 'Team delegation run failed',
+            meta: { done: true, failed: true },
+          });
         })
         .finally(() => finishRun(run.key, run.controller));
       return json(res, 200, { ok: true });
@@ -1181,7 +1647,7 @@ const server = http.createServer(async (req, res) => {
             mode: mode || 'plan',
             signal: run.controller.signal,
           },
-          (e) =>
+          guardedEmitter(wsObj.path, mode || 'plan', (e) =>
             store.append(ws, sid, {
               kind: 'agent',
               actor: adapter,
@@ -1191,26 +1657,19 @@ const server = http.createServer(async (req, res) => {
               text: e.text,
               meta: e.meta,
             })
+          )
         )
-        .then(() => {
-          if (!run.controller.signal.aborted) {
-            store.append(ws, sid, {
-              kind: 'system',
-              actor: adapter,
-              type: 'status',
-              text: `${adapter} finished`,
-              meta: { done: true },
-            });
-          }
+        .then((result) => {
+          finishDirectRun(store, ws, sid, adapter, {
+            aborted: run.controller.signal.aborted,
+            result,
+          });
         })
         .catch((err) => {
-          if (!run.controller.signal.aborted)
-            store.append(ws, sid, {
-              kind: 'system',
-              actor: adapter,
-              type: 'error',
-              text: String(err),
-            });
+          finishDirectRun(store, ws, sid, adapter, {
+            aborted: run.controller.signal.aborted,
+            thrown: err,
+          });
         })
         .finally(() => finishRun(run.key, run.controller));
 

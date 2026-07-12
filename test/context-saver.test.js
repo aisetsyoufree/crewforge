@@ -53,10 +53,26 @@ test('off mode keeps the legacy context shape', async () => {
   assert.equal(out.provider, undefined);
 });
 
-test('status reports built-in saver and optional Headroom flags', () => {
-  const status = contextSaver.status();
+test('status reports built-in saver and optional Headroom flags', async () => {
+  const status = await contextSaver.status();
   assert.equal(status.builtIn, true);
   assert.equal(typeof status.headroomInstalled, 'boolean');
   assert.equal(typeof status.headroomConfigured, 'boolean');
-  assert.equal(status.headroomActive, status.headroomInstalled && status.headroomConfigured);
+  assert.equal(typeof status.headroomReachable, 'boolean');
+  assert.equal(
+    status.headroomActive,
+    status.headroomInstalled && status.headroomConfigured && status.headroomReachable
+  );
+});
+
+test('status does not mark Headroom active when configured proxy is unreachable', async () => {
+  process.env.HEADROOM_BASE_URL = 'http://127.0.0.1:9';
+  delete process.env.HEADROOM_API_KEY;
+
+  const status = await contextSaver.status();
+
+  assert.equal(status.headroomConfigured, true);
+  assert.equal(status.headroomReachable, false);
+  assert.equal(status.headroomActive, false);
+  assert.match(status.headroomUnavailableReason, /not reachable/i);
 });
