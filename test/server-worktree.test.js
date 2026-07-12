@@ -272,6 +272,7 @@ test('failed integration retains worktree and records integration-failed event',
   assert.equal(integrate.status, 409);
   const body = await integrate.json();
   assert.equal(body.status, 'integration-failed');
+  assert.equal(body.error, 'Integration failed');
   assert.ok(resolveRegisteredWorktree(repo, worktreeId));
   assert.equal(
     fs.readFileSync(path.join(repo, 'conflict.txt'), 'utf8'),

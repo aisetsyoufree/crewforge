@@ -1170,9 +1170,10 @@ const server = http.createServer(async (req, res) => {
         const continuation = resumePendingContinuation({ ws, sid, wsObj, pendingEvent });
         return json(res, 200, { status: 'integrated', worktreeId, ...continuation });
       } catch (e) {
-        const message = safeErrMsg(e);
+        const detail = safeErrMsg(e);
+        const clientMessage = 'Integration failed';
         const trackProject = taskTracker.findProjectForWorktree(ws, sid, worktreeId);
-        if (trackProject) taskTracker.onIntegrationFailed(trackProject.id, worktreeId, message);
+        if (trackProject) taskTracker.onIntegrationFailed(trackProject.id, worktreeId, detail);
         store.append(ws, sid, {
           kind: 'system',
           actor: 'user',
@@ -1182,13 +1183,13 @@ const server = http.createServer(async (req, res) => {
             worktreeId,
             branch: inspectInfo.branch,
             diffSummary: inspectInfo.diffSummary,
-            error: message,
+            error: detail,
           },
         });
         return json(res, 409, {
           status: 'integration-failed',
           worktreeId,
-          error: message,
+          error: clientMessage,
         });
       }
     }
