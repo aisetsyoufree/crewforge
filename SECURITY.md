@@ -45,6 +45,7 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 ### Session and workspace data
 
 - Session history, workspace list, and teams are stored **unencrypted** under `data/` (JSON + JSONL). The directory is listed in `.gitignore`.
+- Session CSV exports can contain prompts, responses, commands, local paths, and provider-generated text. Formula-like cells are neutralized, but you should still review an export before sharing it.
 - **Never commit the `data/` directory** (or `runs/`). It contains your chat history, workspace paths, and any API keys you have saved.
 
 ## Prompt injection and untrusted content

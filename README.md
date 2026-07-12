@@ -22,6 +22,7 @@ Use it as a human-approved coding workspace, not as a fully autonomous engineer.
 
 - Add and forget local workspaces.
 - Persist chat sessions per workspace.
+- Export a selected session as CSV for troubleshooting or analysis. Exports include prompts, model output, commands, paths, and metadata; review them before sharing.
 - Stream model output, tool commands, file-change events, and usage signals.
 - Run Plan mode for read-only analysis.
 - Run Edit mode for providers that can modify files.

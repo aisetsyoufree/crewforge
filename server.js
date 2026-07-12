@@ -22,6 +22,7 @@
  *   POST /api/workspaces {path}    add a workspace
  *   DELETE /api/workspaces?id=     forget a workspace
  *   GET  /api/sessions?ws=         sessions for a workspace
+ *   GET  /api/sessions/export?ws=&sid= export one session as CSV
  *   POST /api/sessions {ws}        create a session
  *   GET  /api/changes?ws=          changed files for a workspace
  *   GET  /api/diff?ws=             git diff for a workspace
@@ -1072,6 +1073,23 @@ const server = http.createServer(async (req, res) => {
       const ws = u.searchParams.get('ws');
       if (!validId(res, 'ws', ws)) return;
       return json(res, 200, store.listSessions(ws));
+    }
+    if (req.method === 'GET' && p === '/api/sessions/export') {
+      const ws = u.searchParams.get('ws');
+      const sid = u.searchParams.get('sid');
+      if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
+      if (!store.getWorkspace(ws)) return json(res, 400, { error: 'unknown workspace' });
+      if (!store.listSessions(ws).some((session) => session.id === sid)) {
+        return json(res, 404, { error: 'session not found' });
+      }
+      const csv = store.exportSessionCsv(ws, sid);
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="crewforge-session-${sid}.csv"`,
+        'Content-Length': Buffer.byteLength(csv),
+        'Cache-Control': 'no-store',
+      });
+      return res.end(csv);
     }
     if (req.method === 'POST' && p === '/api/sessions') {
       const data = await body(req, res);

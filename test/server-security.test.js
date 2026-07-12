@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const store = require('../lib/store');
 
 const ROOT = path.join(__dirname, '..');
 const workspaceFile = path.join(ROOT, 'data', 'workspaces.json');
@@ -122,6 +123,28 @@ test('HTTP CSRF gate and dev command rejection are enforced', async (t) => {
   assert.equal(addWorkspace.status, 200);
   const workspace = await addWorkspace.json();
   assert.ok(workspace.id);
+
+  const createExportSession = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie, 'x-csrf-token': csrf },
+    body: JSON.stringify({ ws: workspace.id }),
+  });
+  assert.equal(createExportSession.status, 200);
+  const exportSid = (await createExportSession.json()).id;
+  store.append(workspace.id, exportSid, {
+    kind: 'user',
+    actor: 'user',
+    type: 'message',
+    text: 'investigate this run',
+  });
+  const sessionExport = await fetch(
+    `${baseUrl}/api/sessions/export?ws=${encodeURIComponent(workspace.id)}&sid=${encodeURIComponent(exportSid)}`,
+    { headers: { cookie } }
+  );
+  assert.equal(sessionExport.status, 200);
+  assert.match(sessionExport.headers.get('content-type') || '', /^text\/csv/);
+  assert.match(sessionExport.headers.get('content-disposition') || '', /crewforge-session-/);
+  assert.match(await sessionExport.text(), /investigate this run/);
 
   const previewFile = path.join(wsDir, 'notes.md');
   fs.writeFileSync(previewFile, '# Notes\n\nhello\n');

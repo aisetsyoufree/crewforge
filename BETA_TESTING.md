@@ -43,7 +43,8 @@ Summarize this repository and suggest one safe improvement.
 ```
 
 5. Confirm the response streams into the session.
-6. Send a small Edit-mode prompt in a disposable repo:
+6. Select the session and use the download button beside **Sessions** to export a CSV. Confirm it opens with timestamp, actor, model, type, text, and metadata columns.
+7. Send a small Edit-mode prompt in a disposable repo:
 
 ```text
 Add a short sentence to the README explaining the project purpose.
