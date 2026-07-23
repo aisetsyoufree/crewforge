@@ -18,6 +18,7 @@ test('buildReviewPrompt returns a non-empty string containing the diff text', ()
   assert.ok(prompt.includes(SAMPLE_DIFF));
   assert.ok(prompt.includes('```diff'));
   assert.ok(prompt.includes('senior code reviewer'));
+  assert.ok(prompt.includes('PASS') || prompt.includes('REQUEST_CHANGES'));
 });
 
 test('buildReviewPrompt handles empty diff by mentioning no changes', () => {

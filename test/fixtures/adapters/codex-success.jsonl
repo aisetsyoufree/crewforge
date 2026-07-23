@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"thread-1"}
+{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}
+{"type":"item.completed","item":{"type":"command_execution","command":"npm test"}}
+{"type":"item.completed","item":{"type":"file_change","text":"updated","path":"app.js"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":3}}

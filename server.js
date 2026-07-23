@@ -10,7 +10,13 @@
  *   GET  /api/catalog              available models/adapters
  *   GET  /api/catalog/refresh      refresh model lists from local CLIs
  *   GET  /api/health               provider readiness checks
+ *   GET  /api/ledger?ws=&sid=      list execution ledger entries (scoped/filterable)
+ *   GET  /api/ledger/export?ws=&sid=&format=json|csv  export bounded ledger
+ *   GET  /api/context-policy       context policy catalog + local-control notice
  *   GET  /api/context-saver        context saver and optional Headroom status
+ *   GET  /api/capsules?ws=&sid=    list eligible continuation capsules
+ *   GET  /api/capsules/detail?ws=&sid=&id=  get one capsule (ownership-checked)
+ *   POST /api/capsules/resume      explicitly resume a capsule with user-selected provider
  *   GET  /api/profile              local profile settings
  *   POST /api/profile {settings}   update local profile settings
  *   GET  /api/profile/export       export local profile backup
@@ -27,13 +33,13 @@
  *   GET  /api/changes?ws=          changed files for a workspace
  *   GET  /api/diff?ws=             git diff for a workspace
  *   GET  /api/worktree/pending?ws=&worktreeId=  inspect pending Crew Forge worktree
- *   POST /api/worktree/integrate {ws,sid,worktreeId}  apply after preflight
+ *   POST /api/worktree/integrate {ws,sid,worktreeId,overrideReason?}  apply after quality-gate check
  *   POST /api/worktree/reject {ws,sid,worktreeId}   discard pending worktree
  *   GET  /api/stream?ws=&sid=&off= SSE live event stream (replays history)
  *   POST /api/run {ws,sid,adapter,model,mode,prompt,role}  run one agent turn
- *   POST /api/review {ws,sid,reviewer,reviewerModel}        cross-model diff review
+ *   POST /api/review {ws,sid,reviewer,reviewerModel}        structured PASS/REQUEST_CHANGES review
  *   POST /api/stop {ws,sid}                                  stop an active run
- *   GET  /api/teams                  saved teams
+ *   GET  /api/teams                  saved teams (optional autoRepair, repairIterations)
  *   POST /api/teams {team}           create/update a team
  *   DELETE /api/teams?id=            delete a team
  *   GET  /api/skills                 built-in and local crew skills
@@ -96,13 +102,22 @@ const skills = require('./lib/skills');
 const usage = require('./lib/usage');
 const { guardedEmitter, withWorkspaceInstruction } = require('./lib/workspace_guard');
 const worktree = require('./lib/worktree');
-const { finishDirectRun } = require('./lib/run_outcome');
+const { finishDirectRun, adapterRunError } = require('./lib/run_outcome');
 const { continuationFromPending, findUnresolvedPending } = require('./lib/pending_integration');
-const { buildReviewPrompt } = require('./lib/review');
+const { buildReviewPrompt, parseReviewVerdict, toPersistedReview } = require('./lib/review');
 const keys = require('./lib/keys');
 const tasks = require('./lib/tasks');
 const taskTracker = require('./lib/task_tracker');
+const ledger = require('./lib/ledger');
+const providerHealthLib = require('./lib/provider_health');
+const contextPolicy = require('./lib/context_policy');
+const capsuleLib = require('./lib/continuation_capsule');
+const qualityGate = require('./lib/quality_gate');
+const repairLoop = require('./lib/repair_loop');
 const { normalizeEffort, safeCliEnv } = require('./adapters/base');
+const { safeErrMsg: formatSafeErrMsg } = require('./lib/safe_error');
+const { createCsrfController } = require('./lib/csrf');
+const DATA_DIR = require('./lib/data_dir');
 
 const PORT = Number(process.argv[2]) || 4178;
 const ROOT = __dirname;
@@ -117,14 +132,9 @@ const STATIC_ASSETS = {
   },
 };
 const KEY_ENV = { gemini: 'GEMINI_API_KEY' };
-const CLI_BINS = { claude: 'claude', codex: 'codex', grok: 'grok', antigravity: 'agy' };
-const CLI_MIN_VERSION = { grok: '0.2.72', antigravity: '1.1.1' };
-const CLI_LOGIN = {
-  claude: 'claude login',
-  codex: 'codex login',
-  grok: 'grok login --device-auth',
-  antigravity: 'Sign in with the Antigravity app, then run: agy models',
-};
+const CLI_BINS = providerHealthLib.CLI_BINS;
+const CLI_MIN_VERSION = providerHealthLib.CLI_MIN_VERSION;
+const CLI_LOGIN = providerHealthLib.CLI_LOGIN;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_PROFILE_IMPORT_BYTES = 25 * 1024 * 1024;
 const MAX_FILE_PREVIEW_BYTES = 2 * 1024 * 1024;
@@ -306,7 +316,12 @@ const HOME = path.resolve(os.homedir());
 const SESSION_COOKIE = 'crewforge_session';
 const SESSION_TOKEN = AUTH_TOKEN_ENV || cryptoRandomToken();
 const SESSION_MAX_AGE = 60 * 60 * 24; // 1 day
-const CSRF_TOKEN = cryptoRandomToken();
+// Static process-wide CSRF is acceptable for single-user localhost only.
+// Remote mode uses periodically rotating CSRF (with a short previous-token grace).
+const csrfController = createCsrfController({
+  isRemote: () => HOST_IS_REMOTE,
+  randomToken: () => crypto.randomBytes(24).toString('base64url'),
+});
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -381,19 +396,20 @@ function sessionCookieHeader() {
   if (HOST_IS_REMOTE) h += '; Secure'; // remote deployments must be served over TLS
   return h;
 }
-// Redact absolute filesystem paths from error text before returning to the client,
-// so host directory structure isn't disclosed. Preserves the rest of the message.
+// Redact secrets first, then absolute filesystem paths, before returning to the client.
 function safeErrMsg(e) {
-  let m = String((e && (e.stderr || e.message)) || e || 'error');
-  if (HOME) m = m.split(HOME).join('~');
-  m = m.replace(/(?:\/(?:Users|home)\/[^\s'":]+)/g, '<path>');
-  return m.length > 400 ? m.slice(0, 400) + '…' : m;
+  return formatSafeErrMsg(e, { home: HOME });
 }
+
+function currentCsrfToken() {
+  return csrfController.currentToken();
+}
+
 // Cookie-authenticated mutating requests must echo the CSRF token served in the page.
 // Token-authenticated (Bearer/header/query) clients are not cookie-based, so exempt.
 function passesCsrf(req, url) {
   if (hasRequestToken(req, url)) return true;
-  return safeTokenEqual(req.headers['x-csrf-token'], CSRF_TOKEN);
+  return csrfController.accepted(req.headers['x-csrf-token'], safeTokenEqual);
 }
 const isJsonRequest = (req) => {
   const contentType = String(req.headers['content-type'] || '').toLowerCase();
@@ -563,9 +579,43 @@ function finishRun(key, controller) {
   }
 }
 
+function parseContextPolicy(value, res) {
+  if (value == null || value === '') return contextPolicy.DEFAULT_POLICY;
+  const normalized = contextPolicy.normalizePolicy(value);
+  // Reject unknown non-empty strings that normalize only via fallback when clearly invalid.
+  const raw = String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-');
+  if (
+    raw &&
+    !contextPolicy.POLICIES.includes(raw) &&
+    raw !== 'relevant' &&
+    raw !== 'relevantonly' &&
+    raw !== 'metadata' &&
+    raw !== 'metadataonly' &&
+    raw !== 'full' &&
+    raw !== 'fullworkspace' &&
+    raw !== 'full-ws'
+  ) {
+    if (res) json(res, 400, { error: `invalid contextPolicy: ${value}` });
+    return null;
+  }
+  return normalized;
+}
+
+function safeWorkspaceChanges(wsPath) {
+  try {
+    return watcher.getChanges(wsPath);
+  } catch {
+    return { files: [], stat: '' };
+  }
+}
+
 // Build a compact transcript preamble so stateless CLI calls keep context.
 async function buildContext(wsId, sid, newPrompt, options = {}) {
   const mode = contextSaver.normalizeMode(options.contextMode || 'balanced');
+  const policy = contextPolicy.normalizePolicy(options.contextPolicy);
   const result = await contextSaver.buildSavedContext(store.readEvents(wsId, sid), newPrompt, {
     mode,
     model: options.model,
@@ -583,10 +633,52 @@ async function buildContext(wsId, sid, newPrompt, options = {}) {
         afterTokens: result.afterTokens,
         tokensSaved: result.tokensSaved,
         contextMode: mode,
+        contextPolicy: policy,
       },
     });
   }
   return result.prompt;
+}
+
+/**
+ * Server-enforced policy-aware prompt construction for direct runs, review, repair, continuation.
+ * Never relies solely on model-facing instructions for exclusions.
+ */
+async function buildPolicyAwarePrompt({
+  wsId,
+  sid,
+  workspacePath,
+  objective,
+  mode,
+  contextMode,
+  contextProvider,
+  contextPolicy: policyRaw,
+  model,
+  selectedPaths,
+  skipHistory,
+}) {
+  const policy = contextPolicy.normalizePolicy(policyRaw);
+  const policyCtx = contextPolicy.buildPolicyContext({
+    policy,
+    objective,
+    workspaceRoot: workspacePath,
+    events: store.readEvents(wsId, sid),
+    changes: safeWorkspaceChanges(workspacePath),
+    selectedPaths,
+    mode,
+  });
+  const combined = `${policyCtx.text}\n\nUser request:\n${objective || ''}`;
+  const withWs = withWorkspaceInstruction(combined, workspacePath, mode || 'plan');
+  if (skipHistory) {
+    return { prompt: withWs, policy, policyCtx };
+  }
+  const prompt = await buildContext(wsId, sid, withWs, {
+    contextMode,
+    provider: contextProvider,
+    model,
+    contextPolicy: policy,
+  });
+  return { prompt, policy, policyCtx };
 }
 
 function resumePendingContinuation({ ws, sid, wsObj, pendingEvent }) {
@@ -656,6 +748,22 @@ function resumePendingContinuation({ ws, sid, wsObj, pendingEvent }) {
     meta: { running: true, resumed: true, step: continuation.nextStepOffset + 1 },
   });
   const resumeProject = taskTracker.findProjectForSession(ws, sid);
+  recordLedger({
+    workspaceId: ws,
+    sessionId: sid,
+    projectId: resumeProject && resumeProject.id,
+    actor: 'team',
+    mode: continuation.approvalMode || 'edit',
+    transition: 'recovery',
+    outcome: 'started',
+    summary: `Resuming team plan at step ${continuation.nextStepOffset + 1}`,
+    recovery: {
+      from: 'integrated',
+      to: 'running',
+      resumed: true,
+      reason: `step ${continuation.nextStepOffset + 1}`,
+    },
+  });
   orchestrator
     .runApproved({
       adapters,
@@ -671,6 +779,7 @@ function resumePendingContinuation({ ws, sid, wsObj, pendingEvent }) {
       stepOffset: continuation.nextStepOffset,
       totalSteps: continuation.totalSteps,
       tracking: taskTracker.buildOrchestratorTracking(resumeProject && resumeProject.id),
+      ledger,
     })
     .catch((error) => {
       if (run.controller.signal.aborted) return;
@@ -683,27 +792,6 @@ function resumePendingContinuation({ ws, sid, wsObj, pendingEvent }) {
     })
     .finally(() => finishRun(run.key, run.controller));
   return { resumed: true };
-}
-
-async function commandExists(bin) {
-  try {
-    await execFileP('/bin/sh', ['-lc', `command -v ${bin}`], { encoding: 'utf8', timeout: 1500 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function commandVersion(bin) {
-  try {
-    return String(await execFileP(bin, ['--version'], { encoding: 'utf8', timeout: 2000 })).trim();
-  } catch {
-    try {
-      return String(await execFileP(bin, ['version'], { encoding: 'utf8', timeout: 2000 })).trim();
-    } catch {
-      return '';
-    }
-  }
 }
 
 async function pickNativeFolder() {
@@ -719,20 +807,310 @@ async function pickNativeFolder() {
   return String(await execFileP('osascript', ['-e', script], { encoding: 'utf8' })).trim();
 }
 
-function parseVersion(text) {
-  const match = String(text || '').match(/(\d+)\.(\d+)\.(\d+)/);
-  return match ? match.slice(1).map((part) => Number(part)) : null;
+function recordLedger(partial) {
+  try {
+    return ledger.append(partial);
+  } catch {
+    return null;
+  }
 }
 
-function versionAtLeast(actual, minimum) {
-  const a = parseVersion(actual);
-  const m = parseVersion(minimum);
-  if (!a || !m) return false;
-  for (let i = 0; i < m.length; i++) {
-    if (a[i] > m[i]) return true;
-    if (a[i] < m[i]) return false;
+function profileRepairSettings(extra = {}) {
+  const settings = store.getProfile().settings || {};
+  return {
+    autoRepair: repairLoop.normalizeAutoRepair(
+      extra.autoRepair != null ? extra.autoRepair : settings.autoRepair
+    ),
+    repairIterations: repairLoop.clampRepairIterations(
+      extra.repairIterations != null ? extra.repairIterations : settings.repairIterations
+    ),
+  };
+}
+
+/** @see taskTracker.findReviewTargetTask — never falls back to an arbitrary task when worktreeId is set. */
+function findReviewTargetTask(ws, sid, worktreeId) {
+  return taskTracker.findReviewTargetTask(ws, sid, worktreeId);
+}
+
+/**
+ * Bounded repair controller: one implementer attempt, no silent provider switch, no recursive spawn.
+ */
+function startBoundedRepair({
+  ws,
+  sid,
+  wsObj,
+  projectId,
+  taskId,
+  decision,
+  contextMode,
+  contextProvider,
+  contextPolicy: policy,
+}) {
+  if (!decision || decision.action !== 'repair') return { started: false };
+  const run = startRun(ws, sid);
+  if (!run) return { started: false, error: 'run already active for this session' };
+
+  const task = tasks.getTask(projectId, taskId);
+  if (!task) {
+    finishRun(run.key, run.controller);
+    return { started: false, error: 'task not found' };
   }
-  return true;
+
+  taskTracker.onRepairStarted(projectId, taskId, decision, {
+    ledger,
+    workspaceId: ws,
+    sessionId: sid,
+  });
+
+  const implementer = decision.implementer;
+  const memberAdapter = implementer.adapter;
+  if (!adapters.adapters[memberAdapter]) {
+    taskTracker.onRepairFinished(
+      projectId,
+      taskId,
+      { success: false, stopReason: 'missing_implementer' },
+      { ledger, workspaceId: ws, sessionId: sid }
+    );
+    finishRun(run.key, run.controller);
+    return { started: false, error: 'missing implementer adapter' };
+  }
+
+  let agentCwd = wsObj.path;
+  let stepWorktree = null;
+  if (task.worktreeId) {
+    try {
+      const resolved = worktree.resolveRegisteredWorktree(wsObj.path, task.worktreeId);
+      if (resolved && resolved.path) {
+        agentCwd = resolved.path;
+        stepWorktree = { worktreeId: task.worktreeId, path: resolved.path, branch: task.branch };
+      }
+    } catch {
+      // fall back to workspace root
+    }
+  }
+
+  store.append(ws, sid, {
+    kind: 'system',
+    actor: memberAdapter,
+    type: 'status',
+    text: `${memberAdapter} repair attempt ${decision.attempt}/${decision.maxIterations}…`,
+    meta: {
+      running: true,
+      repair: true,
+      attempt: decision.attempt,
+      maxIterations: decision.maxIterations,
+      worktreeId: task.worktreeId || '',
+    },
+  });
+
+  const policyNorm = contextPolicy.normalizePolicy(policy);
+  const policyCtx = contextPolicy.buildPolicyContext({
+    policy: policyNorm,
+    objective: decision.prompt,
+    workspaceRoot: agentCwd,
+    events: store.readEvents(ws, sid),
+    mode: 'edit',
+  });
+  const safePrompt = withWorkspaceInstruction(
+    `${policyCtx.text}\n\n${decision.prompt}`,
+    agentCwd,
+    'edit'
+  );
+
+  Promise.resolve()
+    .then(async () => {
+      const fullPrompt = await buildContext(ws, sid, safePrompt, {
+        contextMode,
+        provider: contextProvider,
+        model: implementer.model,
+        contextPolicy: policyNorm,
+      });
+      return adapters.run(
+        memberAdapter,
+        {
+          prompt: fullPrompt,
+          model: implementer.model,
+          effort: implementer.effort,
+          cwd: agentCwd,
+          mode: 'edit',
+          signal: run.controller.signal,
+        },
+        guardedEmitter(agentCwd, 'edit', (e) =>
+          store.append(ws, sid, {
+            kind: 'agent',
+            actor: memberAdapter,
+            model: implementer.model,
+            role: implementer.role || 'implementer',
+            type: e.type,
+            text: e.text,
+            meta: e.meta,
+          })
+        )
+      );
+    })
+    .then((result) => {
+      if (run.controller.signal.aborted) {
+        taskTracker.onRepairFinished(
+          projectId,
+          taskId,
+          { success: false, stopReason: 'cancelled' },
+          { ledger, workspaceId: ws, sessionId: sid }
+        );
+        try {
+          capsuleLib.persistCapsule(
+            {
+              workspaceId: ws,
+              sessionId: sid,
+              projectId,
+              reason: 'cancelled',
+              objective: decision.prompt,
+              contextPolicy: policyNorm,
+              mode: 'edit',
+              provider: memberAdapter,
+              model: implementer.model,
+              role: implementer.role,
+              worktreeId: task.worktreeId,
+              workspaceRoot: wsObj.path,
+              remainingTasks: [
+                {
+                  id: taskId,
+                  summary: task.objective || 'Repair interrupted',
+                  acceptanceCriteria: task.acceptanceCriteria,
+                },
+              ],
+              sessionEvents: store.readEvents(ws, sid),
+            },
+            { ledger }
+          );
+        } catch {
+          // best effort
+        }
+        return;
+      }
+      const runErr = adapterRunError(result);
+      if (runErr) {
+        const rateLimited = /rate.?limit|quota|429|usage limit/i.test(runErr);
+        taskTracker.onRepairFinished(
+          projectId,
+          taskId,
+          {
+            success: false,
+            stopReason: rateLimited ? 'rate_limit' : 'provider_failure',
+            error: runErr,
+          },
+          { ledger, workspaceId: ws, sessionId: sid }
+        );
+        store.append(ws, sid, {
+          kind: 'system',
+          actor: memberAdapter,
+          type: 'error',
+          text: runErr,
+        });
+        try {
+          capsuleLib.persistCapsule(
+            {
+              workspaceId: ws,
+              sessionId: sid,
+              projectId,
+              reason: rateLimited ? 'rate_limit' : 'failed',
+              objective: decision.prompt,
+              contextPolicy: policyNorm,
+              mode: 'edit',
+              provider: memberAdapter,
+              model: implementer.model,
+              worktreeId: task.worktreeId,
+              workspaceRoot: wsObj.path,
+              remainingTasks: [
+                {
+                  id: taskId,
+                  summary: task.objective || 'Repair failed',
+                  acceptanceCriteria: task.acceptanceCriteria,
+                },
+              ],
+              sessionEvents: store.readEvents(ws, sid),
+            },
+            { ledger }
+          );
+        } catch {
+          // best effort
+        }
+        return;
+      }
+
+      // Repair finished — leave task for re-review / human integrate (approval still mandatory).
+      if (stepWorktree) {
+        try {
+          const patch = worktree.diff(wsObj.path, stepWorktree.worktreeId);
+          const diffSummary = worktree.summarizeDiff(patch);
+          tasks.transitionTask(projectId, taskId, 'review', {
+            worktreeId: stepWorktree.worktreeId,
+            statusReason: `Repair attempt ${decision.attempt} complete — re-review / integrate`,
+          });
+          tasks.appendEvidence(projectId, taskId, {
+            kind: 'pending-integration',
+            worktreeId: stepWorktree.worktreeId,
+            diffSummary,
+            hasDiff: !!(diffSummary && String(diffSummary).trim()),
+            repairAttempt: decision.attempt,
+          });
+          store.append(ws, sid, {
+            kind: 'system',
+            actor: memberAdapter,
+            type: 'status',
+            text: `${memberAdapter} repair attempt ${decision.attempt} finished (awaiting re-review / integration)`,
+            meta: {
+              done: true,
+              repair: true,
+              attempt: decision.attempt,
+              worktreeId: stepWorktree.worktreeId,
+              awaitingIntegration: true,
+            },
+          });
+        } catch {
+          tasks.transitionTask(projectId, taskId, 'review', {
+            statusReason: `Repair attempt ${decision.attempt} complete`,
+          });
+        }
+      } else {
+        try {
+          tasks.transitionTask(projectId, taskId, 'review', {
+            statusReason: `Repair attempt ${decision.attempt} complete`,
+          });
+        } catch {
+          // ignore
+        }
+      }
+      taskTracker.onRepairFinished(
+        projectId,
+        taskId,
+        { success: true },
+        { ledger, workspaceId: ws, sessionId: sid }
+      );
+      taskTracker.recomputeQualityGate(projectId, taskId, {
+        phase: 'repair',
+        ledger,
+        workspaceId: ws,
+        sessionId: sid,
+      });
+    })
+    .catch((err) => {
+      const msg = safeErrMsg(err);
+      taskTracker.onRepairFinished(
+        projectId,
+        taskId,
+        { success: false, stopReason: 'provider_failure', error: msg },
+        { ledger, workspaceId: ws, sessionId: sid }
+      );
+      store.append(ws, sid, {
+        kind: 'system',
+        actor: memberAdapter,
+        type: 'error',
+        text: msg,
+      });
+    })
+    .finally(() => finishRun(run.key, run.controller));
+
+  return { started: true, attempt: decision.attempt };
 }
 
 function isInsidePath(child, parent) {
@@ -787,34 +1165,16 @@ function looksBinary(buf) {
 }
 
 async function providerHealth() {
-  return Promise.all(
-    adapters.catalog().map(async (a) => {
-      let ready = false;
-      let hint = '';
-      let version = '';
-      if (a.kind === 'cli') {
-        const bin = CLI_BINS[a.id] || a.id;
-        ready = await commandExists(bin);
-        if (ready) {
-          version = await commandVersion(bin);
-          const minimum = CLI_MIN_VERSION[a.id];
-          if (minimum && !versionAtLeast(version, minimum)) {
-            ready = false;
-            hint = `${a.label} CLI ${minimum}+ required; found ${version || 'unknown version'}`;
-          }
-        }
-        if (!ready)
-          hint =
-            hint || `Install the ${a.label} CLI, then run: ${CLI_LOGIN[a.id] || `${a.id} login`}`;
-      } else if (a.kind === 'api' && a.id === 'gemini') {
-        ready = !!(process.env.GEMINI_API_KEY || keys.get('gemini'));
-        if (!ready) hint = 'Add a Gemini API key in Connections';
-      } else {
-        hint = 'Configure this provider';
-      }
-      return { id: a.id, label: a.label, kind: a.kind, ready, hint, version };
-    })
-  );
+  return providerHealthLib.providerHealth(adapters.catalog(), {
+    minVersions: CLI_MIN_VERSION,
+    bins: CLI_BINS,
+    loginHints: CLI_LOGIN,
+    hasApiKey: (id) => {
+      if (id === 'gemini') return !!(process.env.GEMINI_API_KEY || keys.get('gemini'));
+      const envName = KEY_ENV[id];
+      return !!(envName && process.env[envName]) || !!keys.get(id);
+    },
+  });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -836,7 +1196,7 @@ const server = http.createServer(async (req, res) => {
         return reject(res, 401, 'missing app token');
       const html = fs
         .readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8')
-        .replace('<title>', `<meta name="csrf-token" content="${CSRF_TOKEN}" />\n<title>`);
+        .replace('<title>', `<meta name="csrf-token" content="${currentCsrfToken()}" />\n<title>`);
       return send(
         res,
         200,
@@ -857,8 +1217,345 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/catalog/refresh')
       return json(res, 200, await modelDiscovery.refreshCatalog(adapters.catalog()));
     if (req.method === 'GET' && p === '/api/health') return json(res, 200, await providerHealth());
+    if (req.method === 'GET' && p === '/api/ledger') {
+      const ws = u.searchParams.get('ws') || '';
+      const sid = u.searchParams.get('sid') || '';
+      if (ws && !store.isValidId(ws)) return json(res, 400, { error: 'invalid ws' });
+      if (sid && !store.isValidId(sid)) return json(res, 400, { error: 'invalid sid' });
+      if (ws && !store.getWorkspace(ws)) return json(res, 404, { error: 'unknown workspace' });
+      const projectId = u.searchParams.get('projectId') || '';
+      if (projectId && !store.isValidId(projectId))
+        return json(res, 400, { error: 'invalid projectId' });
+      const limit = Number(u.searchParams.get('limit') || 100);
+      const result = ledger.list({
+        workspaceId: ws || undefined,
+        sessionId: sid || undefined,
+        projectId: projectId || undefined,
+        provider: u.searchParams.get('provider') || undefined,
+        transition: u.searchParams.get('transition') || undefined,
+        outcome: u.searchParams.get('outcome') || undefined,
+        limit,
+      });
+      return json(res, 200, result);
+    }
+    if (req.method === 'GET' && p === '/api/ledger/export') {
+      const ws = u.searchParams.get('ws') || '';
+      const sid = u.searchParams.get('sid') || '';
+      if (ws && !store.isValidId(ws)) return json(res, 400, { error: 'invalid ws' });
+      if (sid && !store.isValidId(sid)) return json(res, 400, { error: 'invalid sid' });
+      if (ws && !store.getWorkspace(ws)) return json(res, 404, { error: 'unknown workspace' });
+      const format = String(u.searchParams.get('format') || 'json').toLowerCase();
+      const filter = {
+        workspaceId: ws || undefined,
+        sessionId: sid || undefined,
+        projectId: u.searchParams.get('projectId') || undefined,
+        provider: u.searchParams.get('provider') || undefined,
+        transition: u.searchParams.get('transition') || undefined,
+        outcome: u.searchParams.get('outcome') || undefined,
+        limit: Number(u.searchParams.get('limit') || 2000),
+      };
+      if (format === 'csv') {
+        const csv = ledger.exportCsv(filter);
+        const filename = `crewforge-ledger${ws ? '-' + ws : ''}${sid ? '-' + sid : ''}.csv`;
+        return send(
+          res,
+          200,
+          {
+            'Content-Type': 'text/csv; charset=utf-8',
+            'Cache-Control': 'no-store',
+            'Content-Disposition': `attachment; filename="${filename}"`,
+            'Content-Length': Buffer.byteLength(csv),
+          },
+          csv
+        );
+      }
+      const payload = ledger.exportJson(filter);
+      const filename = `crewforge-ledger${ws ? '-' + ws : ''}${sid ? '-' + sid : ''}.json`;
+      return send(
+        res,
+        200,
+        {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+        },
+        JSON.stringify(payload, null, 2)
+      );
+    }
     if (req.method === 'GET' && p === '/api/context-saver')
       return json(res, 200, await contextSaver.status());
+    if (req.method === 'GET' && p === '/api/context-policy') {
+      return json(res, 200, contextPolicy.policyPublicView(u.searchParams.get('policy')));
+    }
+    if (req.method === 'GET' && p === '/api/capsules') {
+      const ws = u.searchParams.get('ws');
+      const sid = u.searchParams.get('sid');
+      if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid)) return;
+      if (!store.getWorkspace(ws)) return json(res, 400, { error: 'unknown workspace' });
+      const eligibleOnly = u.searchParams.get('all') !== '1';
+      const capsules = capsuleLib
+        .listCapsules(ws, sid, { eligibleOnly })
+        .map((c) => capsuleLib.capsulePublicView(c));
+      return json(res, 200, {
+        capsules,
+        notice: contextPolicy.LOCAL_CONTROL_NOTICE,
+      });
+    }
+    if (req.method === 'GET' && p === '/api/capsules/detail') {
+      const ws = u.searchParams.get('ws');
+      const sid = u.searchParams.get('sid');
+      const id = u.searchParams.get('id');
+      if (!validId(res, 'ws', ws) || !validId(res, 'sid', sid) || !validId(res, 'id', id)) return;
+      if (!store.getWorkspace(ws)) return json(res, 400, { error: 'unknown workspace' });
+      const cap = capsuleLib.readCapsule(ws, sid, id);
+      if (!cap) return json(res, 404, { error: 'capsule not found' });
+      try {
+        capsuleLib.assertOwnership(cap, ws, sid);
+      } catch (e) {
+        return json(res, 403, { error: safeErrMsg(e) });
+      }
+      return json(res, 200, { capsule: capsuleLib.capsulePublicView(cap) });
+    }
+    if (req.method === 'POST' && p === '/api/capsules/resume') {
+      const data = await body(req, res);
+      if (!data) return;
+      const { ws, sid, capsuleId, adapter, model, mode, role, contextMode, contextProvider } = data;
+      if (
+        !validId(res, 'ws', ws) ||
+        !validId(res, 'sid', sid) ||
+        !validId(res, 'capsuleId', capsuleId)
+      )
+        return;
+      const wsObj = store.getWorkspace(ws);
+      if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
+      if (!adapters.adapters[adapter]) return json(res, 400, { error: 'unknown adapter' });
+      const policy = parseContextPolicy(data.contextPolicy, res);
+      if (!policy) return;
+      const cap = capsuleLib.readCapsule(ws, sid, capsuleId);
+      if (!cap) return json(res, 404, { error: 'capsule not found' });
+      try {
+        capsuleLib.assertOwnership(cap, ws, sid);
+      } catch (e) {
+        return json(res, 403, { error: safeErrMsg(e) });
+      }
+      if (cap.status !== 'eligible') {
+        return json(res, 400, { error: `capsule is not eligible (status=${cap.status})` });
+      }
+      const allowedEfforts = adapters.effortLevels(adapter, model);
+      const effort = normalizeEffort(data.effort, allowedEfforts);
+      if (data.effort && String(data.effort).toLowerCase() !== 'default' && !effort) {
+        return json(res, 400, {
+          error: `unsupported effort for ${adapter}${model ? ' ' + model : ''}: ${data.effort}`,
+        });
+      }
+      const runMode =
+        mode === 'edit'
+          ? 'edit'
+          : mode === 'review'
+            ? 'plan'
+            : mode === 'plan'
+              ? 'plan'
+              : cap.constraints.mode === 'edit'
+                ? 'edit'
+                : 'plan';
+      if (runMode === 'edit' && !isGitRepoPath(wsObj.path)) {
+        return json(res, 400, { error: 'Edit mode requires a git workspace' });
+      }
+      const adapterEntry = adapters.adapters[adapter];
+      if (runMode === 'edit' && adapterEntry && adapterEntry.canEdit === false) {
+        return json(res, 400, { error: `${adapter} cannot edit files` });
+      }
+
+      const run = startRun(ws, sid);
+      if (!run) return json(res, 409, { error: 'run already active for this session' });
+
+      let agentCwd = wsObj.path;
+      let stepWorktree = null;
+      // Edit work keeps existing worktree safeguards or creates a fresh isolated worktree.
+      if (runMode === 'edit') {
+        try {
+          if (cap.worktreeId) {
+            try {
+              const existing = worktree.resolveRegisteredWorktree(wsObj.path, cap.worktreeId);
+              if (existing && existing.path) {
+                agentCwd = existing.path;
+                stepWorktree = {
+                  worktreeId: existing.worktreeId,
+                  path: existing.path,
+                  branch: existing.branch,
+                };
+              }
+            } catch {
+              // fall through to fresh worktree
+            }
+          }
+          if (!stepWorktree) {
+            stepWorktree = worktree.createUnique(wsObj.path, `capsule-resume-${cap.id.slice(-8)}`);
+            agentCwd = stepWorktree.path;
+          }
+        } catch (e) {
+          finishRun(run.key, run.controller);
+          return json(res, 400, { error: safeErrMsg(e) });
+        }
+      }
+
+      let resumed;
+      try {
+        resumed = capsuleLib.markResumed(ws, sid, capsuleId, {
+          ledger,
+          provider: adapter,
+          model,
+          mode: runMode,
+          contextPolicy: policy,
+          keepEligible: true, // allow another resume if this attempt fails
+        });
+      } catch (e) {
+        finishRun(run.key, run.controller);
+        return json(res, 400, { error: safeErrMsg(e) });
+      }
+
+      const resumePrompt = capsuleLib.buildResumePrompt(resumed, {
+        contextPolicy: policy,
+        mode: runMode,
+      });
+      const built = await buildPolicyAwarePrompt({
+        wsId: ws,
+        sid,
+        workspacePath: agentCwd,
+        objective: resumePrompt,
+        mode: runMode,
+        contextMode,
+        contextProvider,
+        contextPolicy: policy,
+        model,
+      });
+
+      store.append(ws, sid, {
+        kind: 'user',
+        actor: 'user',
+        type: 'message',
+        text: `Resume capsule ${capsuleId} with ${adapter}${model ? ' · ' + model : ''}`,
+        meta: {
+          final: true,
+          resume: true,
+          capsuleId,
+          contextPolicy: policy,
+        },
+      });
+      store.append(ws, sid, {
+        kind: 'system',
+        actor: adapter,
+        type: 'status',
+        text: `Resuming capsule ${capsuleId} with ${adapter}${model ? ' · ' + model : ''} (${runMode})…`,
+        meta: {
+          running: true,
+          resumed: true,
+          capsuleId,
+          contextPolicy: policy,
+          worktreeId: stepWorktree && stepWorktree.worktreeId,
+        },
+      });
+
+      adapters
+        .run(
+          adapter,
+          {
+            prompt: built.prompt,
+            model,
+            effort,
+            cwd: agentCwd,
+            mode: runMode,
+            signal: run.controller.signal,
+          },
+          guardedEmitter(agentCwd, runMode, (e) =>
+            store.append(ws, sid, {
+              kind: 'agent',
+              actor: adapter,
+              model,
+              role: role || (resumed.source && resumed.source.role) || 'agent',
+              type: e.type,
+              text: e.text,
+              meta: e.meta,
+            })
+          )
+        )
+        .then((result) => {
+          // Edit resumes that produced a worktree require human integration approval.
+          if (
+            stepWorktree &&
+            runMode === 'edit' &&
+            !run.controller.signal.aborted &&
+            !adapterRunError(result)
+          ) {
+            try {
+              const patch = worktree.diff(wsObj.path, stepWorktree.worktreeId);
+              if (patch && patch.trim()) {
+                store.append(ws, sid, {
+                  kind: 'system',
+                  actor: adapter,
+                  type: 'pending-integration',
+                  text: `${adapter} capsule resume awaiting integration approval`,
+                  meta: {
+                    awaitingApproval: true,
+                    worktreeId: stepWorktree.worktreeId,
+                    branch: stepWorktree.branch,
+                    capsuleId,
+                    diffSummary: worktree.summarizeDiff(patch),
+                    diff: patch,
+                  },
+                });
+              }
+            } catch {
+              // leave worktree for manual review
+            }
+          }
+          finishDirectRun(store, ws, sid, adapter, {
+            aborted: run.controller.signal.aborted,
+            result,
+            ledger,
+            meta: {
+              provider: adapter,
+              model,
+              role: role || 'agent',
+              mode: runMode,
+              effort,
+              contextPolicy: policy,
+              objective: resumed.objective,
+              workspaceRoot: wsObj.path,
+              worktreeId: stepWorktree && stepWorktree.worktreeId,
+              changes: safeWorkspaceChanges(wsObj.path),
+            },
+          });
+        })
+        .catch((err) => {
+          finishDirectRun(store, ws, sid, adapter, {
+            aborted: run.controller.signal.aborted,
+            thrown: err,
+            ledger,
+            meta: {
+              provider: adapter,
+              model,
+              role: role || 'agent',
+              mode: runMode,
+              effort,
+              contextPolicy: policy,
+              objective: resumed.objective,
+              workspaceRoot: wsObj.path,
+              worktreeId: stepWorktree && stepWorktree.worktreeId,
+            },
+          });
+        })
+        .finally(() => finishRun(run.key, run.controller));
+
+      return json(res, 200, {
+        ok: true,
+        capsuleId,
+        resumed: true,
+        contextPolicy: policy,
+        worktreeId: stepWorktree && stepWorktree.worktreeId,
+        notice: contextPolicy.LOCAL_CONTROL_NOTICE,
+      });
+    }
     if (req.method === 'GET' && p === '/api/profile') return json(res, 200, store.getProfile());
     if (req.method === 'POST' && p === '/api/profile') {
       const data = await body(req, res);
@@ -1170,6 +1867,64 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: safeErrMsg(e), status: 'invalid-worktree' });
       }
 
+      // Evidence-based quality gate: block integrate when mandatory evidence is blocked/incomplete.
+      // Human approval is this request; override requires an explicit non-empty reason.
+      const trackProjectPre = taskTracker.findProjectForWorktree(ws, sid, worktreeId);
+      const overrideReason =
+        data.overrideReason != null ? String(data.overrideReason).trim().slice(0, 280) : '';
+      if (trackProjectPre) {
+        const check = taskTracker.checkIntegrationAllowed(trackProjectPre.id, worktreeId, {
+          overrideReason,
+        });
+        if (!check.allowed) {
+          recordLedger({
+            workspaceId: ws,
+            sessionId: sid,
+            projectId: trackProjectPre.id,
+            taskId: check.task && check.task.id,
+            actor: 'user',
+            transition: 'integration_failed',
+            outcome: 'failure',
+            decision: 'none',
+            mode: 'edit',
+            summary: 'Integration blocked by quality gate',
+            quality: check.qualityGate
+              ? {
+                  status: check.qualityGate.status,
+                  readyToIntegrate: !!check.qualityGate.readyToIntegrate,
+                }
+              : { status: 'blocked' },
+            recovery: { worktreeId, reason: 'quality_gate' },
+          });
+          return json(res, 409, {
+            status: 'quality-gate-blocked',
+            error: (check.block && check.block.error) || 'Quality gate blocked integration',
+            qualityGate: qualityGate.compactGateView(check.qualityGate),
+          });
+        }
+        if (overrideReason) {
+          tasks.appendEvidence(trackProjectPre.id, check.task.id, {
+            kind: 'override',
+            reason: overrideReason,
+            action: 'integrate',
+          });
+          recordLedger({
+            workspaceId: ws,
+            sessionId: sid,
+            projectId: trackProjectPre.id,
+            taskId: check.task && check.task.id,
+            actor: 'user',
+            transition: 'override_integrate',
+            outcome: 'approved',
+            decision: 'integrated',
+            mode: 'edit',
+            summary: `Override integrate: ${overrideReason}`,
+            quality: { override: true },
+            recovery: { worktreeId, reason: overrideReason },
+          });
+        }
+      }
+
       try {
         worktree.apply(wsObj.path, worktreeId);
         store.append(ws, sid, {
@@ -1181,10 +1936,24 @@ const server = http.createServer(async (req, res) => {
             worktreeId,
             branch: inspectInfo.branch,
             diffSummary: inspectInfo.diffSummary,
+            overrideReason: overrideReason || undefined,
           },
         });
         const trackProject = taskTracker.findProjectForWorktree(ws, sid, worktreeId);
         if (trackProject) taskTracker.onIntegrated(trackProject.id, worktreeId);
+        recordLedger({
+          workspaceId: ws,
+          sessionId: sid,
+          projectId: trackProject && trackProject.id,
+          actor: 'user',
+          transition: 'integrated',
+          outcome: 'success',
+          decision: 'integrated',
+          mode: 'edit',
+          summary: `Integrated worktree ${worktreeId}`,
+          diffSummary: inspectInfo.diffSummary,
+          recovery: { worktreeId, to: 'integrated', resumed: true },
+        });
         const continuation = resumePendingContinuation({ ws, sid, wsObj, pendingEvent });
         return json(res, 200, { status: 'integrated', worktreeId, ...continuation });
       } catch (e) {
@@ -1203,6 +1972,19 @@ const server = http.createServer(async (req, res) => {
             diffSummary: inspectInfo.diffSummary,
             error: detail,
           },
+        });
+        recordLedger({
+          workspaceId: ws,
+          sessionId: sid,
+          projectId: trackProject && trackProject.id,
+          actor: 'user',
+          transition: 'integration_failed',
+          outcome: 'failure',
+          decision: 'none',
+          mode: 'edit',
+          summary: `Integration failed for ${worktreeId}`,
+          diffSummary: inspectInfo.diffSummary,
+          recovery: { worktreeId, reason: detail },
         });
         return json(res, 409, {
           status: 'integration-failed',
@@ -1248,6 +2030,18 @@ const server = http.createServer(async (req, res) => {
           text: `Rejected pending worktree ${worktreeId}`,
           meta: { worktreeId, rejected: true },
         });
+        recordLedger({
+          workspaceId: ws,
+          sessionId: sid,
+          projectId: trackProject && trackProject.id,
+          actor: 'user',
+          transition: 'rejected',
+          outcome: 'rejected',
+          decision: data.asChangesRequested === true ? 'changes_requested' : 'rejected',
+          mode: 'edit',
+          summary: `Rejected worktree ${worktreeId}`,
+          recovery: { worktreeId, to: 'rejected' },
+        });
         return json(res, 200, { status: 'rejected', worktreeId });
       } catch (e) {
         return json(res, 400, { error: safeErrMsg(e) });
@@ -1271,17 +2065,98 @@ const server = http.createServer(async (req, res) => {
         meta: { done: true },
       });
       const trackProject = taskTracker.findProjectForSession(ws, sid);
+      let activeTask = null;
       if (trackProject) {
-        const active = tasks
+        activeTask = tasks
           .listTasks(trackProject.id)
           .find((task) => task.status === 'in_progress' || task.status === 'running');
-        if (active && active.planStepIndex !== null) {
-          taskTracker.onRunAborted(trackProject.id, active.planStepIndex, {
-            displayStep: active.planStepIndex + 1,
-            worktreeId: active.worktreeId,
-            partial: !!active.worktreeId,
+        if (activeTask && activeTask.planStepIndex !== null) {
+          taskTracker.onRunAborted(trackProject.id, activeTask.planStepIndex, {
+            displayStep: activeTask.planStepIndex + 1,
+            worktreeId: activeTask.worktreeId,
+            partial: !!activeTask.worktreeId,
           });
         }
+      }
+      recordLedger({
+        workspaceId: ws,
+        sessionId: sid,
+        projectId: trackProject && trackProject.id,
+        actor: 'user',
+        transition: 'run_stopped',
+        outcome: 'cancelled',
+        decision: 'stopped',
+        summary: 'Run stopped by user',
+      });
+      // Capsule for cancelled direct runs is also created in finishDirectRun; for
+      // team aborts the orchestrator creates one. Create a session-level capsule
+      // when stop arrives with partial project progress and no orchestrator path.
+      try {
+        const events = store.readEvents(ws, sid);
+        const lastUser = [...events]
+          .reverse()
+          .find((e) => e && e.kind === 'user' && e.type === 'message');
+        if (lastUser || activeTask) {
+          const objective = contextPolicy.capText(
+            contextPolicy.redactSecrets(
+              (activeTask && (activeTask.objective || activeTask.title)) ||
+                (lastUser && lastUser.text) ||
+                'Run stopped with partial progress'
+            ),
+            2000
+          );
+          // Avoid duplicate if orchestrator already wrote one very recently.
+          const recent = capsuleLib.listCapsules(ws, sid, { eligibleOnly: true })[0];
+          const tooRecent = recent && Date.now() - Number(recent.createdAt) < 3000;
+          if (!tooRecent) {
+            const capsule = capsuleLib.persistCapsule(
+              {
+                workspaceId: ws,
+                sessionId: sid,
+                projectId: trackProject && trackProject.id,
+                reason: 'cancelled',
+                objective,
+                contextPolicy:
+                  (data && data.contextPolicy) ||
+                  store.getProfile().settings.contextPolicy ||
+                  contextPolicy.DEFAULT_POLICY,
+                mode: (activeTask && activeTask.mode) || 'plan',
+                provider: activeTask && activeTask.adapter,
+                model: activeTask && activeTask.model,
+                worktreeId: activeTask && activeTask.worktreeId,
+                workspaceRoot: wsObj.path,
+                sessionEvents: events,
+                changes: safeWorkspaceChanges(wsObj.path),
+                remainingTasks: activeTask
+                  ? [
+                      {
+                        id: activeTask.id,
+                        summary: activeTask.objective || activeTask.title,
+                        acceptanceCriteria: activeTask.acceptanceCriteria,
+                      },
+                    ]
+                  : [{ id: 'remaining-1', summary: objective }],
+              },
+              { ledger }
+            );
+            store.append(ws, sid, {
+              kind: 'system',
+              actor: 'system',
+              type: 'continuation-capsule',
+              text: `Continuation capsule ready (${capsule.reason})`,
+              meta: {
+                capsuleId: capsule.id,
+                reason: capsule.reason,
+                status: capsule.status,
+                contextPolicy: capsule.constraints.contextPolicy,
+                eligible: true,
+                notice: contextPolicy.LOCAL_CONTROL_NOTICE,
+              },
+            });
+          }
+        }
+      } catch {
+        // best effort
       }
       return json(res, 200, { ok: true });
     }
@@ -1295,24 +2170,65 @@ const server = http.createServer(async (req, res) => {
       if (!wsObj) return json(res, 400, { error: 'unknown workspace' });
       if (!adapters.adapters[reviewer]) return json(res, 400, { error: 'unknown reviewer' });
       if (!sid) return json(res, 400, { error: 'sid required' });
+      const policy = parseContextPolicy(data.contextPolicy, res);
+      if (!policy) return;
+      const repairSettings = profileRepairSettings({
+        autoRepair: data.autoRepair,
+        repairIterations: data.repairIterations,
+      });
+      const targetWorktreeId =
+        data.worktreeId && /^[A-Za-z0-9._-]+$/.test(String(data.worktreeId))
+          ? String(data.worktreeId)
+          : '';
 
       let diff = '';
+      let reviewCwd = wsObj.path;
       try {
-        diff = await execFileP('git', ['-C', wsObj.path, 'diff'], {
-          encoding: 'utf8',
-          maxBuffer: 20 * 1024 * 1024,
-        });
+        if (targetWorktreeId) {
+          try {
+            const resolved = worktree.resolveRegisteredWorktree(wsObj.path, targetWorktreeId);
+            reviewCwd = resolved.path;
+            diff = worktree.diff(wsObj.path, targetWorktreeId) || '';
+          } catch {
+            diff = await execFileP('git', ['-C', wsObj.path, 'diff'], {
+              encoding: 'utf8',
+              maxBuffer: 20 * 1024 * 1024,
+            });
+          }
+        } else {
+          diff = await execFileP('git', ['-C', wsObj.path, 'diff'], {
+            encoding: 'utf8',
+            maxBuffer: 20 * 1024 * 1024,
+          });
+        }
       } catch (e) {
         return json(res, 400, { error: safeErrMsg(e) });
       }
 
-      const changes = watcher.getChanges(wsObj.path);
-      const fileCount = (changes.files || []).length;
-      const prompt = withWorkspaceInstruction(buildReviewPrompt(diff), wsObj.path, 'plan');
+      // Server-side exclusion of sensitive paths and policy filtering of contents.
+      diff = contextPolicy.filterDiffByPolicy(diff, policy);
+      const changes = safeWorkspaceChanges(reviewCwd);
+      const allowedFiles = contextPolicy.filterPaths(changes.files || []);
+      const fileCount = allowedFiles.length;
+      const reviewBody = buildReviewPrompt(diff);
+      const policyCtx = contextPolicy.buildPolicyContext({
+        policy,
+        objective: 'Review the filtered workspace diff and report issues.',
+        workspaceRoot: reviewCwd,
+        events: store.readEvents(ws, sid),
+        changes: { files: allowedFiles },
+        mode: 'review',
+      });
+      const prompt = withWorkspaceInstruction(
+        `${policyCtx.text}\n\n${reviewBody}`,
+        reviewCwd,
+        'plan'
+      );
       const fullPrompt = await buildContext(ws, sid, prompt, {
         contextMode,
         provider: contextProvider,
         model: reviewerModel,
+        contextPolicy: policy,
       });
       const run = startRun(ws, sid);
       if (!run) return json(res, 409, { error: 'run already active for this session' });
@@ -1322,20 +2238,37 @@ const server = http.createServer(async (req, res) => {
         actor: reviewer,
         type: 'status',
         text: `${reviewer} reviewing ${fileCount} changed file${fileCount === 1 ? '' : 's'}…`,
-        meta: { running: true },
+        meta: {
+          running: true,
+          contextPolicy: policy,
+          worktreeId: targetWorktreeId || undefined,
+        },
+      });
+      recordLedger({
+        workspaceId: ws,
+        sessionId: sid,
+        actor: reviewer,
+        provider: reviewer,
+        model: reviewerModel,
+        mode: 'review',
+        transition: 'review_started',
+        outcome: 'started',
+        summary: `Review started (${fileCount} files)`,
+        quality: { fileCount, contextPolicy: policy },
       });
 
+      let repairStarted = false;
       adapters
         .run(
           reviewer,
           {
             prompt: fullPrompt,
             model: reviewerModel,
-            cwd: wsObj.path,
+            cwd: reviewCwd,
             mode: 'plan',
             signal: run.controller.signal,
           },
-          guardedEmitter(wsObj.path, 'plan', (e) =>
+          guardedEmitter(reviewCwd, 'plan', (e) =>
             store.append(ws, sid, {
               kind: 'agent',
               actor: reviewer,
@@ -1351,17 +2284,102 @@ const server = http.createServer(async (req, res) => {
           finishDirectRun(store, ws, sid, reviewer, {
             aborted: run.controller.signal.aborted,
             result,
+            ledger,
+            meta: {
+              provider: reviewer,
+              model: reviewerModel,
+              role: 'reviewer',
+              mode: 'review',
+              review: true,
+              contextPolicy: policy,
+              createCapsule: false,
+            },
           });
+          if (run.controller.signal.aborted || adapterRunError(result)) return;
+
+          // Persist only structured/redacted findings for gates/repair; raw text is in session history.
+          const rawText = (result && result.finalText) || '';
+          const target = findReviewTargetTask(ws, sid, targetWorktreeId);
+          if (target) {
+            const applied = taskTracker.onStructuredReview(
+              target.project.id,
+              target.task.id,
+              rawText,
+              {
+                autoRepair: repairSettings.autoRepair,
+                maxIterations: repairSettings.repairIterations,
+                contextPolicy: policy,
+                ledger,
+                workspaceId: ws,
+                sessionId: sid,
+              }
+            );
+            store.append(ws, sid, {
+              kind: 'system',
+              actor: 'system',
+              type: 'quality-gate',
+              text: `Quality gate: ${(applied && applied.qualityGate && applied.qualityGate.status) || 'incomplete'}`,
+              meta: {
+                taskId: target.task.id,
+                projectId: target.project.id,
+                qualityGate: applied && applied.qualityGate,
+                review: applied && applied.review,
+              },
+            });
+            // Bounded repair only when opt-in autoRepair is ON.
+            if (applied && applied.repairDecision && applied.repairDecision.action === 'repair') {
+              // Release the review run slot, then start repair (no concurrent run / no silent failover).
+              finishRun(run.key, run.controller);
+              repairStarted = true;
+              startBoundedRepair({
+                ws,
+                sid,
+                wsObj,
+                projectId: target.project.id,
+                taskId: target.task.id,
+                decision: applied.repairDecision,
+                contextMode,
+                contextProvider,
+                contextPolicy: policy,
+              });
+            }
+          } else {
+            // No tracked task — still emit a parse-only quality notice (no task gate).
+            const parsed = toPersistedReview(parseReviewVerdict(rawText));
+            store.append(ws, sid, {
+              kind: 'system',
+              actor: 'system',
+              type: 'review-verdict',
+              text: `Structured review: ${parsed.verdict || 'incomplete'} (${parsed.parseStatus})`,
+              meta: {
+                verdict: parsed.verdict,
+                parseStatus: parsed.parseStatus,
+                findingCount: (parsed.findings || []).length,
+              },
+            });
+          }
         })
         .catch((err) => {
           finishDirectRun(store, ws, sid, reviewer, {
             aborted: run.controller.signal.aborted,
             thrown: err,
+            ledger,
+            meta: {
+              provider: reviewer,
+              model: reviewerModel,
+              role: 'reviewer',
+              mode: 'review',
+              review: true,
+              contextPolicy: policy,
+              createCapsule: false,
+            },
           });
         })
-        .finally(() => finishRun(run.key, run.controller));
+        .finally(() => {
+          if (!repairStarted) finishRun(run.key, run.controller);
+        });
 
-      return json(res, 200, { ok: true });
+      return json(res, 200, { ok: true, contextPolicy: policy });
     }
 
     if (req.method === 'GET' && p === '/api/stream') {
@@ -1386,7 +2404,7 @@ const server = http.createServer(async (req, res) => {
         res,
         200,
         usage.aggregate(
-          path.join(ROOT, 'data', 'sessions'),
+          path.join(DATA_DIR, 'sessions'),
           adapters.catalog().map((adapter) => adapter.id)
         )
       );
@@ -1493,6 +2511,8 @@ const server = http.createServer(async (req, res) => {
       const lead = team.members[team.leadIndex];
       if (!lead || !adapters.adapters[lead.adapter])
         return json(res, 400, { error: 'invalid team lead' });
+      const policy = parseContextPolicy(data.contextPolicy, res);
+      if (!policy) return;
       const run = startRun(ws, sid);
       if (!run) return json(res, 409, { error: 'run already active for this session' });
 
@@ -1501,37 +2521,67 @@ const server = http.createServer(async (req, res) => {
         actor: 'user',
         type: 'message',
         text: prompt,
-        meta: { final: true },
+        meta: { final: true, contextPolicy: policy },
       });
       try {
         const steps = await orchestrator.runPlan({
           adapters,
           buildContext,
           store,
-          team: { ...team, contextMode, contextProvider },
+          team: { ...team, contextMode, contextProvider, contextPolicy: policy },
           prompt,
           ws,
           sid,
           cwd: wsObj.path,
           signal: run.controller.signal,
         });
-        if (run.controller.signal.aborted) return json(res, 200, { cancelled: true, steps: [] });
+        if (run.controller.signal.aborted) {
+          recordLedger({
+            workspaceId: ws,
+            sessionId: sid,
+            actor: 'team',
+            mode: 'team',
+            transition: 'run_cancelled',
+            outcome: 'cancelled',
+            summary: 'Team planning cancelled',
+          });
+          return json(res, 200, { cancelled: true, steps: [] });
+        }
+        const repairSettings = profileRepairSettings({
+          autoRepair: data.autoRepair != null ? data.autoRepair : team.autoRepair,
+          repairIterations:
+            data.repairIterations != null ? data.repairIterations : team.repairIterations,
+        });
         const tracked = taskTracker.createProjectFromPlan({
           ws,
           sid,
-          team: { ...team, contextMode, contextProvider },
+          team: { ...team, contextMode, contextProvider, contextPolicy: policy },
           prompt,
           steps,
           approvalMode: planMode,
+          repairSettings,
         });
         store.append(ws, sid, {
           kind: 'system',
           actor: 'team',
           type: 'task-project',
           text: 'Task tracker project created for team plan',
-          meta: { projectId: tracked.project.id },
+          meta: { projectId: tracked.project.id, contextPolicy: policy },
         });
-        return json(res, 200, { steps, projectId: tracked.project.id });
+        recordLedger({
+          workspaceId: ws,
+          sessionId: sid,
+          projectId: tracked.project.id,
+          actor: 'team',
+          provider: lead.adapter,
+          model: lead.model,
+          mode: planMode,
+          transition: 'plan_proposed',
+          outcome: 'success',
+          summary: `Team plan proposed (${steps.length} steps)`,
+          quality: { stepCount: steps.length, contextPolicy: policy },
+        });
+        return json(res, 200, { steps, projectId: tracked.project.id, contextPolicy: policy });
       } catch (e) {
         if (run.controller.signal.aborted) return json(res, 200, { cancelled: true, steps: [] });
         store.append(ws, sid, { kind: 'system', actor: 'team', type: 'error', text: String(e) });
@@ -1542,6 +2592,51 @@ const server = http.createServer(async (req, res) => {
           text: 'Team delegation planning failed',
           meta: { done: true, failed: true },
         });
+        recordLedger({
+          workspaceId: ws,
+          sessionId: sid,
+          actor: 'team',
+          mode: 'team',
+          transition: 'plan_failed',
+          outcome: 'failure',
+          summary: 'Team planning failed',
+          quality: { contextPolicy: policy },
+        });
+        try {
+          const capsule = capsuleLib.persistCapsule(
+            {
+              workspaceId: ws,
+              sessionId: sid,
+              reason: 'failed',
+              objective: prompt,
+              contextPolicy: policy,
+              mode: planMode,
+              provider: lead.adapter,
+              model: lead.model,
+              role: 'lead',
+              workspaceRoot: wsObj.path,
+              sessionEvents: store.readEvents(ws, sid),
+              remainingTasks: [{ id: 'plan', summary: 'Re-plan team delegation' }],
+            },
+            { ledger }
+          );
+          store.append(ws, sid, {
+            kind: 'system',
+            actor: 'system',
+            type: 'continuation-capsule',
+            text: `Continuation capsule ready (${capsule.reason})`,
+            meta: {
+              capsuleId: capsule.id,
+              reason: capsule.reason,
+              status: capsule.status,
+              contextPolicy: policy,
+              eligible: true,
+              notice: contextPolicy.LOCAL_CONTROL_NOTICE,
+            },
+          });
+        } catch {
+          // best effort
+        }
         return json(res, 500, { error: safeErrMsg(e) });
       } finally {
         finishRun(run.key, run.controller);
@@ -1561,6 +2656,8 @@ const server = http.createServer(async (req, res) => {
       if (!sid) return json(res, 400, { error: 'sid required' });
       if (!team.members || !team.members.length)
         return json(res, 400, { error: 'team has no members' });
+      const policy = parseContextPolicy(data.contextPolicy, res);
+      if (!policy) return;
       if (projectId && !validId(res, 'projectId', projectId)) return;
       const requestedProject = projectId ? tasks.getProject(projectId) : null;
       if (
@@ -1602,13 +2699,25 @@ const server = http.createServer(async (req, res) => {
 
       const trackProject = requestedProject || taskTracker.findProjectForSession(ws, sid);
       if (trackProject) taskTracker.onPlanApproved(trackProject.id);
+      recordLedger({
+        workspaceId: ws,
+        sessionId: sid,
+        projectId: trackProject && trackProject.id,
+        actor: 'user',
+        mode,
+        transition: 'plan_approved',
+        outcome: 'approved',
+        decision: 'approved',
+        summary: `Approved team plan (${Array.isArray(steps) ? steps.length : 0} steps)`,
+        quality: { stepCount: Array.isArray(steps) ? steps.length : 0, contextPolicy: policy },
+      });
 
       orchestrator
         .runApproved({
           adapters,
           buildContext,
           store,
-          team: { ...team, contextMode, contextProvider },
+          team: { ...team, contextMode, contextProvider, contextPolicy: policy },
           steps,
           approvalMode: mode,
           ws,
@@ -1616,6 +2725,7 @@ const server = http.createServer(async (req, res) => {
           cwd: wsObj.path,
           signal: run.controller.signal,
           tracking: taskTracker.buildOrchestratorTracking(trackProject && trackProject.id),
+          ledger,
         })
         .catch((err) => {
           if (run.controller.signal.aborted) return;
@@ -1632,9 +2742,20 @@ const server = http.createServer(async (req, res) => {
             text: 'Team delegation run failed',
             meta: { done: true, failed: true },
           });
+          recordLedger({
+            workspaceId: ws,
+            sessionId: sid,
+            projectId: trackProject && trackProject.id,
+            actor: 'team',
+            mode: 'team',
+            transition: 'run_failed',
+            outcome: 'failure',
+            summary: 'Team delegation run failed',
+            quality: { contextPolicy: policy },
+          });
         })
         .finally(() => finishRun(run.key, run.controller));
-      return json(res, 200, { ok: true });
+      return json(res, 200, { ok: true, contextPolicy: policy });
     }
 
     if (req.method === 'POST' && p === '/api/run') {
@@ -1654,6 +2775,8 @@ const server = http.createServer(async (req, res) => {
       }
       if (mode === 'edit' && !isGitRepoPath(wsObj.path))
         return json(res, 400, { error: 'Edit mode requires a git workspace' });
+      const policy = parseContextPolicy(data.contextPolicy, res);
+      if (!policy) return;
       const run = startRun(ws, sid);
       if (!run) return json(res, 409, { error: 'run already active for this session' });
 
@@ -1662,26 +2785,46 @@ const server = http.createServer(async (req, res) => {
         actor: 'user',
         type: 'message',
         text: prompt,
-        meta: { final: true },
+        meta: { final: true, contextPolicy: policy },
       });
       store.append(ws, sid, {
         kind: 'system',
         actor: adapter,
         type: 'status',
         text: `${adapter}${model ? ' · ' + model : ''}${effort ? ' · ' + effort : ''} (${mode || 'plan'}) running…`,
-        meta: { running: true },
+        meta: { running: true, contextPolicy: policy },
+      });
+      recordLedger({
+        workspaceId: ws,
+        sessionId: sid,
+        actor: adapter,
+        provider: adapter,
+        model,
+        role: role || 'agent',
+        mode: mode || 'plan',
+        transition: 'run_started',
+        outcome: 'started',
+        summary: `${adapter} run started (${mode || 'plan'})`,
+        quality: { contextPolicy: policy },
       });
 
-      const fullPrompt = await buildContext(ws, sid, prompt, {
+      const built = await buildPolicyAwarePrompt({
+        wsId: ws,
+        sid,
+        workspacePath: wsObj.path,
+        objective: prompt,
+        mode: mode || 'plan',
         contextMode,
-        provider: contextProvider,
+        contextProvider,
+        contextPolicy: policy,
         model,
+        selectedPaths: data.selectedPaths,
       });
       adapters
         .run(
           adapter,
           {
-            prompt: fullPrompt,
+            prompt: built.prompt,
             model,
             effort,
             cwd: wsObj.path,
@@ -1704,17 +2847,40 @@ const server = http.createServer(async (req, res) => {
           finishDirectRun(store, ws, sid, adapter, {
             aborted: run.controller.signal.aborted,
             result,
+            ledger,
+            meta: {
+              provider: adapter,
+              model,
+              role: role || 'agent',
+              mode: mode || 'plan',
+              effort,
+              contextPolicy: policy,
+              objective: prompt,
+              workspaceRoot: wsObj.path,
+              changes: safeWorkspaceChanges(wsObj.path),
+            },
           });
         })
         .catch((err) => {
           finishDirectRun(store, ws, sid, adapter, {
             aborted: run.controller.signal.aborted,
             thrown: err,
+            ledger,
+            meta: {
+              provider: adapter,
+              model,
+              role: role || 'agent',
+              mode: mode || 'plan',
+              effort,
+              contextPolicy: policy,
+              objective: prompt,
+              workspaceRoot: wsObj.path,
+            },
           });
         })
         .finally(() => finishRun(run.key, run.controller));
 
-      return json(res, 200, { ok: true });
+      return json(res, 200, { ok: true, contextPolicy: policy });
     }
 
     // ---------- dev server process management ----------
@@ -1811,6 +2977,8 @@ server.listen(PORT, HOST, () => {
         'WARNING: Crew Forge is listening on a non-loopback host.',
         'This exposes a filesystem-browsing and code-execution surface to the network.',
         'Only do this on a trusted network, with trusted users, CREW_FORGE_ALLOW_REMOTE=1, and CREW_FORGE_AUTH_TOKEN set.',
+        'Remote mode uses periodically rotating CSRF tokens; reload the page if mutating requests start failing with 403.',
+        'See SECURITY.md for the single-user localhost trust model and remote/LAN risks.',
         '',
       ].join('\n')
     );

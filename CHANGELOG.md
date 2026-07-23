@@ -2,7 +2,19 @@
 
 ## 0.1.0-beta.4
 
+- Team editor refreshes provider model catalogs when opened so newly available local CLI models can be assigned without restarting.
+- Provider adapters now have golden transcript fixtures and bounded parse diagnostics with secret redaction and graceful fallback behavior.
+- Provider health checklist distinguishes missing CLI, version too old, unparseable version (with diagnostic, not hard-fail), login not confirmed where detectable, and ready. Conservative minimums: Claude `2.1.187+`, Codex `0.142.5+`.
+- Local append-only execution ledger (redacted, scoped, rotatable) with list/export APIs and a compact **Ledger** right-panel tab (JSON/CSV download).
+- Provider-neutral **continuation capsules** for failed/cancelled/rate-limited/incomplete runs, with list/get/resume APIs and a **Resume with…** UI action (user-selected provider only; no automatic failover).
+- Server-enforced **context policy** (`relevant-only` default, `metadata-only`, `full-workspace`) with sensitive-path exclusions, profile persistence, and accurate “local control with provider processing” labeling.
+- **Evidence-based quality gates** (`lib/quality_gate.js`, versioned): rule-based `pass` / `blocked` / `incomplete` from acceptance criteria, check outcomes, structured review findings, diagnostics, worktree integration state, diffs, cancellation/provider failure, and human approval. Never model confidence %. Blocks integrate when mandatory evidence is incomplete/blocked unless an explicit `overrideReason` is recorded. Compact quality badge/panel in the Tasks UI.
+- **Structured review verdicts**: strict `PASS` | `REQUEST_CHANGES` parser with bounded findings; unparseable output is incomplete (never guessed pass). Raw reviewer text stays in session history only.
+- **Bounded repair loop** (opt-in `autoRepair` default **off**; `repairIterations` default 2, min 0, hard cap 5): on REQUEST_CHANGES for edit tasks, optional repair assigned to the original implementer. Stops on PASS, unchanged findings, max attempts, cancel, provider failure/rate limit, missing implementer, or human stop. Ledger transitions for quality/repair; continuation capsule on interrupt. No silent provider switching.
+- Pinned development dependency `brace-expansion` to `1.1.16` via npm overrides (high-severity audit fix; no runtime dependency added).
 - Per-session CSV export for troubleshooting, with spreadsheet-formula injection protection.
+- Test runs use an isolated temporary data directory, preventing CI or local tests from touching real workspaces, profiles, sessions, tasks, keys, capsules, or ledgers.
+- Fixed narrow activity-tab and mobile advanced-control overflow found during browser smoke testing.
 
 ## 0.1.0-beta.3
 

@@ -1,0 +1,4 @@
+not-json-at-all Authorization: Bearer sk-live-supersecrettokenvalue
+{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]
+{"type":"totally_unknown_event","payload":"x","api_key":"sk-abcdefghijklmnopqrstuvwxyz"}
+{"type":"result","result":"partial","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0}

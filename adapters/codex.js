@@ -2,7 +2,13 @@
 
 const { spawn } = require('child_process');
 const readline = require('readline');
-const { ev, normalizeEffort, cliExitError, safeCliEnv } = require('./base');
+const {
+  ev,
+  normalizeEffort,
+  createStreamDiagnostics,
+  cliExitError,
+  safeCliEnv,
+} = require('./base');
 
 const CODEX_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'];
 
@@ -48,6 +54,7 @@ module.exports = {
 
       const child = spawn('codex', args, { stdio: ['ignore', 'pipe', 'pipe'], env: safeCliEnv() });
       const rl = readline.createInterface({ input: child.stdout });
+      const diag = createStreamDiagnostics(onEvent, { adapter: 'codex' });
       let finalText = '';
       let usage = null;
       let stderr = '';
@@ -75,11 +82,16 @@ module.exports = {
 
       rl.on('line', (line) => {
         const t = line.trim();
-        if (!t || t[0] !== '{') return;
+        if (!t) return;
+        if (t[0] !== '{') {
+          diag.nonJson(t);
+          return;
+        }
         let o;
         try {
           o = JSON.parse(t);
         } catch {
+          diag.malformedJson(t);
           return;
         }
 
@@ -103,6 +115,10 @@ module.exports = {
         } else if (o.type === 'turn.completed' && o.usage) {
           usage = o.usage;
           onEvent(ev('usage', `in:${o.usage.input_tokens} out:${o.usage.output_tokens}`, o.usage));
+        } else if (o.type === 'item.completed' || o.type === 'turn.completed') {
+          // Known types with incomplete payload — nothing to surface.
+        } else {
+          diag.unknownSchema(t, { type: o.type || null });
         }
       });
 

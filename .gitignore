@@ -2,8 +2,12 @@ node_modules/
 data/
 runs/
 *.log
+.DS_Store
 .crewforge-worktrees/
 worktrees/
 .env
 .env.*
 !.env.example
+
+# Private local planning material; do not publish.
+patent/

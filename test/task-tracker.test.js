@@ -6,7 +6,7 @@ const test = require('node:test');
 const tasks = require('../lib/tasks');
 const taskTracker = require('../lib/task_tracker');
 
-const projectsDir = path.join(__dirname, '..', 'data', 'projects');
+const projectsDir = path.join(require('../lib/data_dir'), 'projects');
 const projectPath = (id) => path.join(projectsDir, `${id}.json`);
 
 function cleanupProject(id) {
@@ -197,6 +197,82 @@ test('worktree lookup resolves the owning project instead of the latest session 
   } finally {
     cleanupProject(firstId);
     cleanupProject(secondId);
+  }
+});
+
+test('findReviewTargetTask never assigns wrong task when worktreeId is supplied', () => {
+  let projectId;
+  try {
+    const team = {
+      id: 'team-review-target',
+      leadIndex: 0,
+      members: [
+        { adapter: 'claude', model: 'sonnet', role: 'DevA' },
+        { adapter: 'codex', model: 'gpt', role: 'DevB' },
+      ],
+    };
+    const created = taskTracker.createProjectFromPlan({
+      ws: 'ws-review-target',
+      sid: 'sid-review-target',
+      team,
+      prompt: 'Two edit tasks',
+      steps: [
+        { memberIndex: 0, task: 'First edit' },
+        { memberIndex: 1, task: 'Second edit' },
+      ],
+      approvalMode: 'edit',
+    });
+    projectId = created.project.id;
+    taskTracker.onPlanApproved(projectId);
+
+    taskTracker.onStepStart(projectId, 0, { displayStep: 1, total: 2, mode: 'edit' });
+    taskTracker.onStepAwaitingIntegration(projectId, 0, {
+      displayStep: 1,
+      worktreeId: 'wt-task-a',
+      branch: 'crewforge/wt-task-a',
+      diffSummary: 'a',
+    });
+    taskTracker.onStepStart(projectId, 1, { displayStep: 2, total: 2, mode: 'edit' });
+    taskTracker.onStepAwaitingIntegration(projectId, 1, {
+      displayStep: 2,
+      worktreeId: 'wt-task-b',
+      branch: 'crewforge/wt-task-b',
+      diffSummary: 'b',
+    });
+
+    const tasksMod = require('../lib/tasks');
+    const list = tasksMod.listTasks(projectId);
+    assert.equal(list.length, 2);
+    // Put both in review-ish state so a naive "preferred" fallback would be ambiguous/wrong.
+    for (const t of list) {
+      tasksMod.updateTask(projectId, t.id, { status: 'review' });
+    }
+
+    const hitA = taskTracker.findReviewTargetTask(
+      'ws-review-target',
+      'sid-review-target',
+      'wt-task-a'
+    );
+    const hitB = taskTracker.findReviewTargetTask(
+      'ws-review-target',
+      'sid-review-target',
+      'wt-task-b'
+    );
+    assert.ok(hitA && hitA.task);
+    assert.ok(hitB && hitB.task);
+    assert.equal(hitA.task.worktreeId, 'wt-task-a');
+    assert.equal(hitB.task.worktreeId, 'wt-task-b');
+    assert.notEqual(hitA.task.id, hitB.task.id);
+
+    // Unknown worktree must return null — never an arbitrary other task.
+    const miss = taskTracker.findReviewTargetTask(
+      'ws-review-target',
+      'sid-review-target',
+      'wt-does-not-exist'
+    );
+    assert.equal(miss, null);
+  } finally {
+    cleanupProject(projectId);
   }
 });
 

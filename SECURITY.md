@@ -10,6 +10,23 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 - Do **not** set `CREW_FORGE_HOST=0.0.0.0` or proxy/port-forward the port. Overriding the bind address exposes a **code-execution surface** to your network — the folder browser and Edit-mode agents can read paths you give them and run arbitrary shell commands. Remote binding requires both `CREW_FORGE_ALLOW_REMOTE=1` and `CREW_FORGE_AUTH_TOKEN`; open the app with `?token=<value>` once to establish the browser session.
 - The folder browser is home-scoped by default and blocks sensitive hidden folders such as `.ssh`. Set `CREW_FORGE_ALLOW_SENSITIVE_PATHS=1` only for trusted local testing when you understand the risk.
 
+## Trust model (single-user localhost)
+
+Crew Forge is designed for **one trusted operator on the same machine**.
+
+| Mode                                                                     | Default | Assumptions                                                                           | Protections                                                                                                                                                                        |
+| ------------------------------------------------------------------------ | ------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Localhost** (`127.0.0.1`)                                              | Yes     | Only you can reach the port; other local users/processes are outside the threat model | HttpOnly session cookie, `SameSite=Strict`, process-wide CSRF token in the page meta, origin checks, JSON-only mutating bodies                                                     |
+| **Remote / LAN** (`CREW_FORGE_ALLOW_REMOTE=1` + `CREW_FORGE_AUTH_TOKEN`) | No      | Anyone who can reach the host and present the token is effectively an admin           | Same as localhost, plus `Secure` cookie flag (TLS required), bearer/header/query token auth, and **periodically rotating CSRF** (30 min, with a short previous-token grace window) |
+
+### Explicit risks of remote / LAN mode
+
+- The bind address is a **code-execution and filesystem-browsing surface**. A stolen or guessed `CREW_FORGE_AUTH_TOKEN` lets an attacker run agents, read workspace files (within browser scope), integrate worktrees, and start dev processes.
+- CSRF protection on remote is stronger than localhost (rotating tokens), but it is **not** multi-user authorization, SSO, or per-role ACL. There is still a single shared auth token for the process.
+- Bearer/header/query token clients skip the CSRF header (they are not cookie-session browsers). Treat that token like a root password: long, random, never committed, rotate after exposure.
+- Do not expose Crew Forge on the public internet without TLS termination, a private network boundary, and understanding that agents run with your OS user privileges.
+- Prefer SSH port-forwarding or a VPN to a localhost bind over opening `0.0.0.0`.
+
 ## Repository maintainer checklist
 
 - Keep only the deploy keys that are actively needed. For this repository, a single repo-scoped write deploy key is enough for publishing from the local machine; remove unused personal SSH deploy keys after the push succeeds.
@@ -46,6 +63,9 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 
 - Session history, workspace list, and teams are stored **unencrypted** under `data/` (JSON + JSONL). The directory is listed in `.gitignore`.
 - Session CSV exports can contain prompts, responses, commands, local paths, and provider-generated text. Formula-like cells are neutralized, but you should still review an export before sharing it.
+- The execution ledger (`data/ledger/entries.jsonl`) is an append-only local audit log of run/plan/integration transitions. It is intentionally redacted: it does **not** store prompt text, environment variables, API keys, auth tokens, unbounded command output, or patent materials. Field lengths are capped; likely secrets are stripped; CSV exports neutralize spreadsheet formula injection. Entries are scoped by workspace/session/project when those ids exist. Ledger list/export endpoints use the same app session and CSRF conventions as other APIs.
+- **Context policy** (`relevant-only` default, `metadata-only`, `full-workspace`) is user-selectable, validated by the server, and enforced when Crew Forge builds prompts, trees, diffs, and continuation capsules. Default exclusions cover `.env*`, credential/key files, `.ssh` / `.aws` / `.config` secrets, `node_modules`, `.git`, runtime `data/` / `runs/`, worktrees, `patent/`, and related patterns. This is **local control with provider processing** — inference still runs in the selected provider CLI/API and is not local/private to Crew Forge alone. Full-workspace still excludes sensitive paths from Crew Forge-built context but warns that the provider may read broader non-excluded workspace files through its CLI.
+- **Continuation capsules** (`data/capsules/`) store a bounded, redacted resume package when a run fails, is cancelled with partial progress, hits a rate-limit signal, or is otherwise incomplete. Capsules omit env vars, credentials, tokens, absolute host paths, and unbounded command output. Resume is always explicit with a user-selected provider/model/effort/mode — there is no automatic provider switch or silent failover.
 - **Never commit the `data/` directory** (or `runs/`). It contains your chat history, workspace paths, and any API keys you have saved.
 
 ## Prompt injection and untrusted content
@@ -60,6 +80,8 @@ Report vulnerabilities privately through GitHub Security Advisories if the repos
 - `workspace_guard` is **advisory**: it rewrites or blocks some streamed `file_change` events that point outside the selected workspace path. It does **not** contain agents, intercept every CLI action, or prevent shell commands from touching other paths.
 - Team **edit** steps run in isolated Git worktrees under `.crewforge-worktrees/` so your main checkout stays unchanged until you **integrate**. Worktrees protect the selected repo checkout and enable review; they are **not** a host sandbox — agents still run on your machine with your credentials.
 - Team edit changes require **explicit integration** in the UI (or equivalent API). Rejecting a pending worktree discards that branch’s changes without merging them into the workspace root.
+- **Quality gates** are rule-based over persisted evidence (review findings, checks, diagnostics, diffs, failures). They block integration when mandatory evidence is blocked/incomplete. Human approval cannot silently override missing evidence — an explicit non-empty `overrideReason` is required and is recorded in task evidence and the ledger. Gates never use model self-reported confidence.
+- **Auto-repair** after `REQUEST_CHANGES` is opt-in (default off). When enabled, repair attempts are bounded (default 2, hard cap 5), assigned to the original implementer/provider/model, and never silently switch providers.
 
 ## Reporting a vulnerability
 

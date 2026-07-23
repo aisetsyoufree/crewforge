@@ -9,9 +9,10 @@ const { execFileSync } = require('node:child_process');
 const test = require('node:test');
 
 const ROOT = path.join(__dirname, '..');
-const workspaceFile = path.join(ROOT, 'data', 'workspaces.json');
-const profileFile = path.join(ROOT, 'data', 'profile.json');
-const sessionsDir = path.join(ROOT, 'data', 'sessions');
+const DATA = require('../lib/data_dir');
+const workspaceFile = path.join(DATA, 'workspaces.json');
+const profileFile = path.join(DATA, 'profile.json');
+const sessionsDir = path.join(DATA, 'sessions');
 const { create, resolveRegisteredWorktree } = require('../lib/worktree');
 const store = require('../lib/store');
 

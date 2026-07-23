@@ -1,0 +1,5 @@
+event: ping
+data: not-valid-json token=sk-abcdefghijklmnopqrstuvwxyz
+data: {"mysteryField":true,"api_key":"AIzaSyDummyKeyValueHere1234567890"}
+data: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}
+data: [DONE]

@@ -10,6 +10,7 @@ const {
   ev,
   normalizeEffort,
   TokenStreamer,
+  createStreamDiagnostics,
   cliExitError,
   safeCliEnv,
 } = require('./base');
@@ -76,6 +77,7 @@ module.exports = {
       const child = spawn('grok', args, { stdio: ['ignore', 'pipe', 'pipe'], env: safeCliEnv() });
       const rl = readline.createInterface({ input: child.stdout });
       const stream = new TokenStreamer(onEvent);
+      const diag = createStreamDiagnostics(onEvent, { adapter: 'grok' });
       let finalText = '';
       let sessionId = null;
       let stderr = '';
@@ -104,11 +106,16 @@ module.exports = {
 
       rl.on('line', (line) => {
         const t = line.trim();
-        if (!t || t[0] !== '{') return;
+        if (!t) return;
+        if (t[0] !== '{') {
+          diag.nonJson(t);
+          return;
+        }
         let o;
         try {
           o = JSON.parse(t);
         } catch {
+          diag.malformedJson(t);
           return;
         }
 
@@ -142,17 +149,9 @@ module.exports = {
             onEvent(ev('done', '', { finalText, stopReason: o.stopReason, session: o.sessionId }));
             break;
           default:
-            // unknown event types: surface as reasoning so nothing is silently lost
+            // Unknown event types: normalized diagnostic (never silently drop).
             stream.flush();
-            onEvent(
-              ev(
-                'reasoning',
-                `[${o.type || 'unknown'}] ${o.data || o.message || JSON.stringify(o)}`,
-                {
-                  final: true,
-                }
-              )
-            );
+            diag.unknownSchema(t, { type: o.type || null });
         }
       });
 

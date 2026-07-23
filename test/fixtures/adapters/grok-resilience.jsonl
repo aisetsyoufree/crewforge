@@ -1,0 +1,5 @@
+plain-text stderr leak token=super-secret-grok-token
+{"type":"thought","data":"ok"
+{"type":"brand_new_event","message":"novel","password":"hunter2"}
+{"type":"text","data":"recovered"}
+{"type":"end","stopReason":"complete"}

@@ -33,7 +33,9 @@ Use it as a human-approved coding workspace, not as a fully autonomous engineer.
 - Track team delegation steps in a durable task/project store with a read-only **Tasks** panel (status is app-controlled; integrate worktrees to mark edit steps done).
 - Use Git worktrees for edit-mode isolation in team delegation (`lib/orchestrator.js`) and direct Edit runs.
 - Review and explicitly integrate team edit changes before they land in your main checkout.
-- Ask another model to review uncommitted changes.
+- Ask another model to review uncommitted changes with a **structured PASS / REQUEST_CHANGES** verdict (raw prose stays in session history; gates use bounded findings only).
+- **Evidence-based quality gates** (rule-based pass / blocked / incomplete — never model confidence %) block ready-to-integrate and actual integration when mandatory evidence is missing; human approval still required, and cannot override missing evidence without an explicit recorded reason.
+- Optional **bounded repair loop** after REQUEST_CHANGES (opt-in auto-repair default **off**; max iterations default 2, hard cap 5) assigned to the original implementer — no silent provider failover.
 - Track observed usage from events that pass through the app.
 
 ## Disclaimer & Compliance
@@ -47,12 +49,13 @@ Provider and product names are used for identification only. See [TRADEMARKS.md]
 - This is beta software. Expect rough edges and provider-specific failures.
 - Provider CLIs may change their flags or stream formats; adapters can break.
 - The **Tasks** panel is a lightweight tracker, not a full issue board: no drag/drop, no arbitrary status overrides, and no cross-session views.
+- Quality gates are evidence-based and deterministic; they do not infer hidden quotas, auto-select providers, or silently fail over. Auto-repair is opt-in per run/team (default off).
 - Human review is required. Do not trust generated code without reading diffs and running tests.
 - Team edit steps run in isolated Git worktrees; integration is manual. `workspace_guard` only validates streamed file-change events — it is not a sandbox.
 - Claude, Grok, and Antigravity edit sessions can run host shell commands on your machine, like their CLIs elsewhere. Antigravity’s CLI sandbox is not a hard host boundary.
 - Edit mode requires a Git workspace in this beta; use Plan mode for non-Git folders.
 - Usage metrics are observed locally and are not authoritative billing data.
-- Session history, workspace paths, teams, and API keys are stored locally under `data/` and are not encrypted.
+- Session history, workspace paths, teams, API keys, and a redacted execution ledger are stored locally under `data/` and are not encrypted.
 - The app is local-first, but prompts, code snippets, diffs, and tool output may be sent to the selected provider.
 
 ## Requirements
@@ -60,8 +63,8 @@ Provider and product names are used for identification only. See [TRADEMARKS.md]
 - Node.js >= 18
 - Git for workspace activity, diffs, reviews, and worktree isolation
 - At least one supported provider:
-  - Claude Code CLI (`claude`)
-  - OpenAI Codex CLI (`codex`)
+  - Claude Code CLI (`claude` 2.1.187 or newer recommended)
+  - OpenAI Codex CLI (`codex` 0.142.5 or newer recommended)
   - xAI Grok Build CLI (`grok` 0.2.72 or newer)
   - Google Antigravity CLI (`agy` 1.1.1+) authenticated through the Antigravity app
   - Optional legacy Gemini API key (`GEMINI_API_KEY` or the Connections panel)
@@ -87,6 +90,10 @@ node server.js 3000
 ```
 
 ## Where To Run It
+
+Crew Forge is a **single-user, localhost-first** tool. By default it binds only to `127.0.0.1`. Anyone who can open that local port can drive the same code-execution surface as you — treat the machine as the trust boundary.
+
+Remote/LAN binding (`CREW_FORGE_ALLOW_REMOTE=1` + `CREW_FORGE_AUTH_TOKEN`) is optional and risky: it exposes folder browsing and agent execution to the network. Remote mode uses a rotating CSRF token; reload the page if mutations start returning 403. See [SECURITY.md](SECURITY.md) for the full trust model and risks.
 
 Run Crew Forge on the same machine that has:
 

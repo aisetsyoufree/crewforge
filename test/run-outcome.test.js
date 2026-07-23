@@ -26,6 +26,7 @@ test('finishDirectRun records failure without success status', () => {
   finishDirectRun(store, 'ws1', 'sid1', 'codex', {
     aborted: false,
     result: { error: 'boom' },
+    meta: { createCapsule: false },
   });
   assert.equal(store.events.length, 2);
   assert.equal(store.events[0].event.type, 'error');
@@ -49,6 +50,46 @@ test('finishDirectRun skips completion when run was aborted', () => {
   finishDirectRun(store, 'ws1', 'sid1', 'claude', {
     aborted: true,
     result: { finalText: 'done' },
+    meta: { createCapsule: false },
   });
+  // Capsule creation disabled: no session events.
   assert.equal(store.events.length, 0);
+});
+
+test('finishDirectRun records ledger success and failure transitions', () => {
+  const store = mockStore();
+  const ledgerEntries = [];
+  const ledger = {
+    append(entry) {
+      ledgerEntries.push(entry);
+      return entry;
+    },
+  };
+
+  finishDirectRun(store, 'ws1', 'sid1', 'claude', {
+    aborted: false,
+    result: { finalText: 'done' },
+    ledger,
+    meta: { provider: 'claude', model: 'sonnet', mode: 'plan' },
+  });
+  assert.equal(ledgerEntries.length, 1);
+  assert.equal(ledgerEntries[0].transition, 'run_finished');
+  assert.equal(ledgerEntries[0].outcome, 'success');
+
+  finishDirectRun(store, 'ws1', 'sid1', 'codex', {
+    aborted: false,
+    result: { error: 'boom' },
+    ledger,
+    meta: { provider: 'codex', mode: 'edit', createCapsule: false },
+  });
+  assert.equal(ledgerEntries[1].transition, 'run_failed');
+  assert.equal(ledgerEntries[1].outcome, 'failure');
+
+  finishDirectRun(store, 'ws1', 'sid1', 'claude', {
+    aborted: true,
+    result: { finalText: 'x' },
+    ledger,
+    meta: { review: true, mode: 'review', createCapsule: false },
+  });
+  assert.equal(ledgerEntries[2].transition, 'run_cancelled');
 });

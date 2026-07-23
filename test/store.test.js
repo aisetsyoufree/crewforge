@@ -8,8 +8,8 @@ const test = require('node:test');
 
 const store = require('../lib/store');
 
-const dataDir = path.join(__dirname, '..', 'data');
-const workspaceFile = path.join(__dirname, '..', 'data', 'workspaces.json');
+const dataDir = require('../lib/data_dir');
+const workspaceFile = path.join(dataDir, 'workspaces.json');
 const profileFile = path.join(dataDir, 'profile.json');
 const teamsFile = path.join(dataDir, 'teams.json');
 const customSkillsFile = path.join(dataDir, 'custom-skills.json');
@@ -70,6 +70,61 @@ test('addWorkspace and removeWorkspace manage saved workspace list', (t) => {
     false
   );
   assert.equal(store.removeWorkspace(added.id), false);
+});
+
+test('failed append does not consume a sequence number', (t) => {
+  const before = readRaw(workspaceFile);
+  const beforeSessions = snapshotSessions();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewforge-store-seq-'));
+  t.after(() => {
+    restoreRaw(workspaceFile, before);
+    restoreSessions(beforeSessions);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const ws = store.addWorkspace(dir);
+  const sid = store.createSession(ws.id);
+  const first = store.append(ws.id, sid, {
+    kind: 'user',
+    actor: 'user',
+    type: 'message',
+    text: 'one',
+  });
+  assert.equal(first.seq, 0);
+
+  const sessionPath = path.join(sessionsDir, ws.id, `${sid}.jsonl`);
+  // Make the next append fail by replacing the file with a directory.
+  fs.unlinkSync(sessionPath);
+  fs.mkdirSync(sessionPath);
+  assert.throws(() =>
+    store.append(ws.id, sid, { kind: 'user', actor: 'user', type: 'message', text: 'fail' })
+  );
+
+  // Restore a writable file and confirm the next seq is still 1 (failed append did not consume).
+  fs.rmSync(sessionPath, { recursive: true, force: true });
+  fs.writeFileSync(sessionPath, JSON.stringify(first) + '\n', { mode: 0o600 });
+  // Reset hub channel by reading events length path: clear module hub via re-append after recreate.
+  // chan() caches seq; force re-init by using a fresh session id.
+  const sid2 = store.createSession(ws.id);
+  const a = store.append(ws.id, sid2, { kind: 'user', actor: 'user', type: 'message', text: 'a' });
+  assert.equal(a.seq, 0);
+
+  // Directly verify the in-process failure semantics on sid2 with a mock-like break:
+  // After a successful append at seq 0, force failure then success — seq must be 1.
+  const file2 = path.join(sessionsDir, ws.id, `${sid2}.jsonl`);
+  fs.unlinkSync(file2);
+  fs.mkdirSync(file2);
+  assert.throws(() =>
+    store.append(ws.id, sid2, { kind: 'system', actor: 'system', type: 'message', text: 'nope' })
+  );
+  fs.rmSync(file2, { recursive: true, force: true });
+  // Re-seed history so readEvents length matches; hub still holds seq=1 only after success.
+  // Hub already has seq=1 from first success; failed call must not have advanced it further.
+  fs.writeFileSync(file2, JSON.stringify(a) + '\n', { mode: 0o600 });
+  const b = store.append(ws.id, sid2, { kind: 'user', actor: 'user', type: 'message', text: 'b' });
+  assert.equal(b.seq, 1, 'failed append must not consume the next sequence number');
+  const c = store.append(ws.id, sid2, { kind: 'user', actor: 'user', type: 'message', text: 'c' });
+  assert.equal(c.seq, 2);
 });
 
 test('session CSV export preserves diagnostics and neutralizes spreadsheet formulas', () => {

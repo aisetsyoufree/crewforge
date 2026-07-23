@@ -5,7 +5,7 @@ const test = require('node:test');
 
 const tasks = require('../lib/tasks');
 
-const projectsDir = path.join(__dirname, '..', 'data', 'projects');
+const projectsDir = path.join(require('../lib/data_dir'), 'projects');
 const projectPath = (id) => path.join(projectsDir, `${id}.json`);
 
 test('projects and tasks persist with dependency lifecycle', () => {
@@ -68,10 +68,9 @@ test('projects and tasks persist with dependency lifecycle', () => {
       [['info', 'implemented']]
     );
     assert.strictEqual(persistedB.logs[0].ts.length > 0, true);
-    assert.deepStrictEqual(persistedB.reviewResult, {
-      verdict: 'request-changes',
-      notes: 'tighten tests',
-    });
+    assert.equal(persistedB.reviewResult.verdict, 'REQUEST_CHANGES');
+    assert.equal(persistedB.reviewResult.parseStatus, 'ok');
+    assert.equal(persistedB.reviewResult.notes, 'tighten tests');
 
     const loadedTask = tasks.getTask(project.id, taskB.id);
     assert.strictEqual(loadedTask.status, 'running');
@@ -96,4 +95,74 @@ test('invalid ids are rejected', () => {
     () => tasks.getTask('project-ok', '../bad'),
     (err) => err instanceof Error && /invalid task id/.test(err.message)
   );
+});
+
+test('appendEvidence caps at 100 newest entries on every append path', () => {
+  let project;
+  try {
+    project = tasks.createProject({ objective: 'evidence cap', teamId: 't', leadName: 'L' });
+    const task = tasks.createTask(project.id, {
+      title: 'T',
+      objective: 'o',
+      owner: 'A',
+      mode: 'edit',
+    });
+    for (let i = 0; i < 120; i++) {
+      tasks.appendEvidence(project.id, task.id, { kind: 'note', n: i });
+    }
+    const reloaded = tasks.getTask(project.id, task.id);
+    assert.equal(reloaded.evidence.length, tasks.MAX_EVIDENCE_ENTRIES);
+    assert.equal(reloaded.evidence[0].n, 20);
+    assert.equal(reloaded.evidence[99].n, 119);
+
+    // updateTask path also caps when evidence is replaced wholesale.
+    const oversized = Array.from({ length: 150 }, (_, i) => ({ kind: 'note', n: i, ts: 'x' }));
+    const updated = tasks.updateTask(project.id, task.id, { evidence: oversized });
+    assert.equal(updated.evidence.length, 100);
+    assert.equal(updated.evidence[0].n, 50);
+    assert.equal(updated.evidence[99].n, 149);
+  } finally {
+    if (project && project.id && fs.existsSync(projectPath(project.id))) {
+      fs.unlinkSync(projectPath(project.id));
+    }
+  }
+});
+
+test('mutateProjectFile serializes nested reentrant updates without lost writes', () => {
+  let project;
+  try {
+    project = tasks.createProject({ objective: 'lock', teamId: 't', leadName: 'L' });
+    const task = tasks.createTask(project.id, {
+      title: 'T',
+      objective: 'o',
+      owner: 'A',
+      mode: 'plan',
+    });
+
+    tasks.mutateProjectFile(project.id, (data) => {
+      data.tasks[task.id].statusReason = 'outer';
+      // Nested mutation must see the same in-memory object and not clobber on exit.
+      tasks.appendEvidence(project.id, task.id, { kind: 'note', from: 'inner' });
+      data.tasks[task.id].statusReason = 'outer-after-inner';
+      return true;
+    });
+
+    const reloaded = tasks.getTask(project.id, task.id);
+    assert.equal(reloaded.statusReason, 'outer-after-inner');
+    assert.equal(
+      reloaded.evidence.some((e) => e.from === 'inner'),
+      true
+    );
+
+    // Sequential appends accumulate (no lost-write from separate RMW).
+    tasks.appendEvidence(project.id, task.id, { kind: 'note', from: 'a' });
+    tasks.appendEvidence(project.id, task.id, { kind: 'note', from: 'b' });
+    const again = tasks.getTask(project.id, task.id);
+    const kinds = again.evidence.map((e) => e.from).filter(Boolean);
+    assert.ok(kinds.includes('a') && kinds.includes('b') && kinds.includes('inner'));
+  } finally {
+    if (project && project.id && fs.existsSync(projectPath(project.id))) {
+      fs.unlinkSync(projectPath(project.id));
+    }
+  }
 });

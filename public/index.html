@@ -191,6 +191,16 @@
             </button>
           </div>
           <div class="ctrlGroup" id="advancedControls" hidden>
+            <span class="ctrlLabel">Privacy</span>
+            <select
+              class="ctrlSel"
+              id="contextPolicy"
+              title="Server-enforced context policy: what workspace context is sent to the provider"
+            >
+              <option value="relevant-only">Relevant only (default)</option>
+              <option value="metadata-only">Metadata only</option>
+              <option value="full-workspace">Full workspace</option>
+            </select>
             <span class="ctrlLabel">Context</span>
             <select
               class="ctrlSel"
@@ -209,12 +219,35 @@
               <option value="balanced">Balanced</option>
               <option value="maximum">Maximum</option>
             </select>
+            <span class="ctrlLabel" title="Bounded repair after REQUEST_CHANGES (max 5)"
+              >Repair</span
+            >
+            <label
+              class="ctrlCheck"
+              title="Opt-in automatic repair after structured review requests changes (default off)"
+            >
+              <input type="checkbox" id="autoRepair" />
+              Auto-repair
+            </label>
+            <select
+              class="ctrlSel"
+              id="repairIterations"
+              title="Max repair iterations after REQUEST_CHANGES (0–5, default 2). Auto-repair must also be enabled."
+            >
+              <option value="0">0 iterations</option>
+              <option value="1">1 iteration</option>
+              <option value="2" selected>2 iterations</option>
+              <option value="3">3 iterations</option>
+              <option value="4">4 iterations</option>
+              <option value="5">5 iterations (cap)</option>
+            </select>
+            <div class="policyNotice" id="policyNotice" hidden></div>
           </div>
           <button
             class="advToggle"
             id="advToggle"
             type="button"
-            title="Show context saver settings"
+            title="Show context and privacy settings"
             aria-expanded="false"
           >
             Context settings
@@ -355,6 +388,18 @@
           title="View token and rate-limit activity observed by Crew Forge"
         >
           Usage
+        </button>
+        <button
+          class="panelTab"
+          data-tab="ledger"
+          role="tab"
+          aria-selected="false"
+          aria-controls="paneLedger"
+          id="tab-ledger"
+          type="button"
+          title="View redacted local execution ledger for this session"
+        >
+          Ledger
         </button>
       </div>
 
@@ -576,6 +621,42 @@
           <div id="usageRows"><div class="usageEmpty">No usage recorded yet.</div></div>
         </div>
       </div>
+
+      <!-- Ledger pane -->
+      <div class="panelPane hidden" id="paneLedger" role="tabpanel" aria-labelledby="tab-ledger">
+        <div class="ledgerHead">
+          <h2>Ledger</h2>
+          <div class="ledgerActions">
+            <button class="btn ghost" id="ledgerRefresh" type="button" title="Refresh ledger">
+              Refresh
+            </button>
+            <button
+              class="btn ghost"
+              id="ledgerExportJson"
+              type="button"
+              title="Download JSON export"
+            >
+              JSON
+            </button>
+            <button
+              class="btn ghost"
+              id="ledgerExportCsv"
+              type="button"
+              title="Download CSV export"
+            >
+              CSV
+            </button>
+          </div>
+        </div>
+        <div class="ledgerCaption">
+          Append-only local log of runs, approvals, and integrations. Summaries are redacted — no
+          prompts, secrets, or full command output.
+        </div>
+        <div class="ledgerSummary" id="ledgerSummary">
+          <div class="ledgerEmpty">Select a workspace/session to view ledger entries.</div>
+        </div>
+        <div class="ledgerList" id="ledgerList"></div>
+      </div>
     </aside>
 
     <div class="modal" id="onboardingModal">
@@ -684,6 +765,12 @@
               >Members</label
             >
             <div class="teamMemberTools">
+              <span
+                class="teamModelRefreshStatus"
+                id="teamModelRefreshStatus"
+                role="status"
+                aria-live="polite"
+              ></span>
               <button
                 class="btn ghost"
                 id="editSkills"
@@ -711,6 +798,44 @@
             <span></span>
           </div>
           <div class="teamMembers" id="teamMembers"></div>
+          <div
+            class="teamAdvanced"
+            style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line)"
+          >
+            <label
+              style="
+                font-size: 10px;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                color: var(--muted);
+                display: block;
+                margin-bottom: 6px;
+              "
+              >Repair (beta)</label
+            >
+            <label
+              class="ctrlCheck"
+              title="Opt-in automatic repair when a structured review returns REQUEST_CHANGES (default off)"
+            >
+              <input type="checkbox" id="teamAutoRepair" />
+              Auto-repair for this team
+            </label>
+            <label style="display: block; margin-top: 6px; font-size: 12px; color: var(--muted)">
+              Max repair iterations
+              <select
+                id="teamRepairIterations"
+                class="ctrlSel"
+                title="0–5, default 2. Hard cap 5. Auto-repair must be enabled."
+              >
+                <option value="0">0</option>
+                <option value="1">1</option>
+                <option value="2" selected>2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5 (cap)</option>
+              </select>
+            </label>
+          </div>
         </div>
         <div class="foot">
           <button

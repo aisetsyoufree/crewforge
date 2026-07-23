@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","model":"sonnet"}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"considering"},{"type":"tool_use","name":"Bash","input":{"command":"npm test"}},{"type":"tool_use","name":"Write","input":{"file_path":"/tmp/example.js"}},{"type":"text","text":"finished"}]}}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour"}}
+{"type":"result","result":"finished","usage":{"input_tokens":12,"output_tokens":4},"total_cost_usd":0.01}

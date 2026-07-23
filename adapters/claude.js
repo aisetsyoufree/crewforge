@@ -2,7 +2,14 @@
 
 const { spawn } = require('child_process');
 const readline = require('readline');
-const { EFFORT_LEVELS, ev, normalizeEffort, cliExitError, safeCliEnv } = require('./base');
+const {
+  EFFORT_LEVELS,
+  ev,
+  normalizeEffort,
+  createStreamDiagnostics,
+  cliExitError,
+  safeCliEnv,
+} = require('./base');
 
 const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const CLAUDE_MODEL_EFFORT_LEVELS = {
@@ -57,6 +64,7 @@ module.exports = {
         env: safeCliEnv(),
       });
       const rl = readline.createInterface({ input: child.stdout });
+      const diag = createStreamDiagnostics(onEvent, { adapter: 'claude' });
       let finalText = '';
       let usage = null;
       let stderr = '';
@@ -84,11 +92,16 @@ module.exports = {
 
       rl.on('line', (line) => {
         const t = line.trim();
-        if (!t || t[0] !== '{') return;
+        if (!t) return;
+        if (t[0] !== '{') {
+          diag.nonJson(t);
+          return;
+        }
         let o;
         try {
           o = JSON.parse(t);
         } catch {
+          diag.malformedJson(t);
           return;
         }
 
@@ -138,6 +151,15 @@ module.exports = {
             )
           );
           onEvent(ev('done', '', { finalText, usage, terminal: o.terminal_reason }));
+        } else if (
+          o.type === 'system' ||
+          o.type === 'assistant' ||
+          o.type === 'user' ||
+          o.type === 'rate_limit_event'
+        ) {
+          // Known schema variants with nothing to surface (e.g. empty assistant).
+        } else {
+          diag.unknownSchema(t, { type: o.type || null });
         }
       });
 

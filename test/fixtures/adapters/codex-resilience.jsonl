@@ -1,0 +1,6 @@
+WARN: unexpected banner api_key=secret-codex-token-value
+{"broken json from codex
+{"type":"future.event","data":"hello","token":"sk-abcdefghijklmnopqrstuvwxyz"}
+{"type":"thread.started","thread_id":"thread-resilience"}
+{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}
+{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":1}}

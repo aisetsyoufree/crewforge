@@ -1,6 +1,6 @@
 'use strict';
 
-const { ev } = require('./base');
+const { ev, createStreamDiagnostics } = require('./base');
 
 // Gemini via REST (no CLI on disk). Reads GEMINI_API_KEY from the environment.
 // Text generation only — the raw API cannot edit files, so Gemini fills
@@ -25,6 +25,7 @@ module.exports = {
     const m = model || module.exports.defaultModel;
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:streamGenerateContent?alt=sse`;
     let finalText = '';
+    const diag = createStreamDiagnostics(onEvent, { adapter: 'gemini' });
     try {
       onEvent(ev('status', `Gemini (${m}) request started`));
       const res = await fetch(url, {
@@ -50,13 +51,19 @@ module.exports = {
         buf = lines.pop();
         for (const line of lines) {
           const s = line.trim();
-          if (!s.startsWith('data:')) continue;
+          // SSE framing: blank lines and comment lines are protocol noise, not payload.
+          if (!s || s.startsWith(':')) continue;
+          if (!s.startsWith('data:')) {
+            diag.nonJson(s);
+            continue;
+          }
           const payload = s.slice(5).trim();
           if (!payload || payload === '[DONE]') continue;
           let o;
           try {
             o = JSON.parse(payload);
           } catch {
+            diag.malformedJson(payload);
             continue;
           }
           const parts =
@@ -64,7 +71,9 @@ module.exports = {
             o.candidates[0] &&
             o.candidates[0].content &&
             o.candidates[0].content.parts;
+          let handled = false;
           if (parts) {
+            handled = true;
             for (const p of parts) {
               if (p.text) {
                 finalText += p.text;
@@ -73,6 +82,7 @@ module.exports = {
             }
           }
           if (o.usageMetadata) {
+            handled = true;
             onEvent(
               ev(
                 'usage',
@@ -80,6 +90,13 @@ module.exports = {
                 o.usageMetadata
               )
             );
+          }
+          // candidates present but empty (e.g. finishReason only) is still known schema.
+          if (!handled && o.candidates) handled = true;
+          if (!handled) {
+            diag.unknownSchema(payload, {
+              keys: o && typeof o === 'object' ? Object.keys(o).slice(0, 8) : [],
+            });
           }
         }
       }

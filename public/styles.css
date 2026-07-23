@@ -1557,6 +1557,18 @@ select.model {
   gap: 8px;
   align-items: center;
 }
+.teamModelRefreshStatus {
+  color: var(--muted);
+  font-size: 11px;
+  min-width: 92px;
+  text-align: right;
+}
+.teamModelRefreshStatus.loading {
+  color: var(--claude);
+}
+.teamModelRefreshStatus.warn {
+  color: var(--warn);
+}
 .teamGridHead,
 .teamRow {
   display: grid;
@@ -1603,6 +1615,9 @@ select.model {
   justify-self: center;
 }
 @media (max-width: 620px) {
+  .teamModelRefreshStatus {
+    display: none;
+  }
   .teamGridHead {
     display: none;
   }
@@ -1998,12 +2013,15 @@ select.model {
   padding: 0 8px;
 }
 .panelTab {
-  flex: 1;
-  padding: 13px 4px 11px;
-  font-size: 11px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 13px 2px 11px;
+  overflow: hidden;
+  font-size: 10px;
   font-weight: 750;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
   background: transparent;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -2334,6 +2352,23 @@ select.model {
 .stepFailed {
   color: var(--bad);
 }
+.policyNotice {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+  margin-top: 6px;
+  max-width: 52rem;
+}
+.policyNotice.warn {
+  color: var(--warn);
+}
+.capsuleCard .integrationTitle {
+  color: var(--ok);
+}
+.capsuleCard .capsuleResume {
+  font-weight: 600;
+}
 .stepFailed .stepStats {
   color: var(--bad);
   opacity: 0.7;
@@ -2484,6 +2519,91 @@ select.model {
 .provNotReady {
   color: var(--warn);
 }
+.provWarn {
+  color: var(--warn);
+}
+.healthIcon.warn {
+  color: var(--warn);
+}
+
+.ledgerHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 12px 4px;
+}
+.ledgerHead h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+}
+.ledgerActions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.ledgerCaption {
+  padding: 0 12px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.ledgerSummary {
+  padding: 0 12px 6px;
+  font-size: 11px;
+}
+.ledgerEmpty {
+  color: var(--muted);
+  font-style: italic;
+}
+.ledgerCounts {
+  color: var(--muted);
+  font-size: 11px;
+}
+.ledgerList {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 0 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ledgerRow {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--panel2);
+}
+.ledgerWhen {
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.ledgerTitle {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: lowercase;
+}
+.ledgerMeta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.ledgerSummaryText {
+  font-size: 11px;
+  margin-top: 4px;
+  line-height: 1.4;
+  color: var(--text);
+  word-break: break-word;
+}
+.ledgerDecision {
+  font-size: 10px;
+  margin-top: 4px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
 .checkRow.actionable {
   width: 100%;
   text-align: left;
@@ -2575,4 +2695,122 @@ select.model {
     max-height: 72vh;
     padding: 4px 14px 12px;
   }
+  #advancedControls {
+    max-width: 100%;
+    height: auto;
+    padding: 6px 8px;
+    flex-wrap: wrap;
+  }
+  #advancedControls .ctrlSel {
+    flex: 1 1 130px;
+    height: 30px;
+  }
+  #advancedControls .ctrlSel + .ctrlSel {
+    margin-left: 0;
+    border-left: 0;
+  }
+  #advancedControls .ctrlCheck {
+    flex: 0 1 auto;
+  }
+  #advancedControls .policyNotice {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+}
+
+/* Quality gate panel / badge (evidence-based; no confidence %) */
+.qualityBadge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.qualityBadge.pass {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+.qualityBadge.blocked {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--line));
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+}
+.qualityBadge.incomplete {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.qualityPanel {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel2);
+  font-size: 12px;
+}
+.qualityPanelHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.qgReasons,
+.qgEvidence {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.qgReasons li,
+.qgEvidence li {
+  margin: 2px 0;
+}
+.qgEv.blocked .qgStatus {
+  color: var(--bad);
+}
+.qgEv.incomplete .qgStatus {
+  color: var(--warn);
+}
+.qgEv.pass .qgStatus {
+  color: var(--ok);
+}
+.qgKind {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.qgNote,
+.qgTs,
+.qgScore,
+.qgRepair {
+  margin-top: 6px;
+  font-size: 11px;
+}
+.qualityGateStatus .qualityBadge {
+  margin-left: 4px;
+}
+.ctrlCheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-right: 8px;
+  white-space: nowrap;
+}
+.ctrlCheck input {
+  margin: 0;
+}
+.taskRowTop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.taskRowTop .qualityBadge {
+  margin-left: auto;
 }

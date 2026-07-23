@@ -8,9 +8,10 @@ const path = require('node:path');
 const test = require('node:test');
 
 const ROOT = path.join(__dirname, '..');
-const workspaceFile = path.join(ROOT, 'data', 'workspaces.json');
-const profileFile = path.join(ROOT, 'data', 'profile.json');
-const projectsDir = path.join(ROOT, 'data', 'projects');
+const DATA = require('../lib/data_dir');
+const workspaceFile = path.join(DATA, 'workspaces.json');
+const profileFile = path.join(DATA, 'profile.json');
+const projectsDir = path.join(DATA, 'projects');
 const taskTracker = require('../lib/task_tracker');
 
 function readRaw(file) {

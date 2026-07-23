@@ -14,6 +14,7 @@ let connectionsTimer = null;
 let TEAMS = [],
   SKILLS = [],
   editingTeam = null;
+let modelCatalogRefreshPromise = null;
 let planDraft = null;
 let rateLimitActors = new Set();
 const RATE_LIMIT_RE = /rate.?limit|quota|usage limit|429|insufficient|exhaust/i;
@@ -26,9 +27,18 @@ const BOTTOM_H_KEY = 'crewforge.bottomH';
 const RIGHT_TAB_KEY = 'crewforge.rightTab';
 const CONTEXT_MODE_KEY = 'crewforge.contextMode';
 const CONTEXT_PROVIDER_KEY = 'crewforge.contextProvider';
+const CONTEXT_POLICY_KEY = 'crewforge.contextPolicy';
+const AUTO_REPAIR_KEY = 'crewforge.autoRepair';
+const REPAIR_ITER_KEY = 'crewforge.repairIterations';
 const EFFORT_KEY = 'crewforge.effort';
 const THEME_KEY = 'crewforge.theme';
 const FONT_SIZE_KEY = 'crewforge.fontSize';
+const CONTEXT_POLICIES = ['relevant-only', 'metadata-only', 'full-workspace'];
+const REPAIR_ITER_MIN = 0;
+const REPAIR_ITER_MAX = 5;
+const REPAIR_ITER_DEFAULT = 2;
+const LOCAL_CONTROL_NOTICE =
+  'Local control with provider processing: prompts and context are sent to the selected provider CLI/API for inference; inference is not local or private to Crew Forge alone.';
 const LEFT_WIDTH_MIN = 200;
 const LEFT_WIDTH_MAX = 520;
 const RIGHT_WIDTH_MIN = 260;
@@ -42,6 +52,17 @@ let contextMode = localStorage.getItem(CONTEXT_MODE_KEY) || 'balanced';
 if (!['off', 'balanced', 'maximum'].includes(contextMode)) contextMode = 'balanced';
 let contextProvider = localStorage.getItem(CONTEXT_PROVIDER_KEY) || 'builtin';
 if (!['builtin', 'headroom'].includes(contextProvider)) contextProvider = 'builtin';
+let contextPolicy = localStorage.getItem(CONTEXT_POLICY_KEY) || 'relevant-only';
+if (!CONTEXT_POLICIES.includes(contextPolicy)) contextPolicy = 'relevant-only';
+let autoRepair = localStorage.getItem(AUTO_REPAIR_KEY) === '1';
+let repairIterations = Number(localStorage.getItem(REPAIR_ITER_KEY));
+if (
+  !Number.isInteger(repairIterations) ||
+  repairIterations < REPAIR_ITER_MIN ||
+  repairIterations > REPAIR_ITER_MAX
+) {
+  repairIterations = REPAIR_ITER_DEFAULT;
+}
 let directEffort = localStorage.getItem(EFFORT_KEY) || '';
 if (!['', 'low', 'medium', 'high', 'xhigh', 'max'].includes(directEffort)) directEffort = '';
 let contextSaverInfo = null;
@@ -139,22 +160,63 @@ function safeMarkdownHref(href) {
   return raw;
 }
 
+/**
+ * Escape-first inline markdown. Raw HTML (including raw <a>) never survives;
+ * only supported markdown transforms introduce markup.
+ */
 function mdInline(s) {
-  return s
+  let text = esc(String(s || ''));
+  return text
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
     .replace(/`([^`]+)`/g, '<code class="md-icode">$1</code>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, href) => {
-      const safe = safeMarkdownHref(href);
-      return safe
-        ? `<a href="${safe}" target="_blank" rel="noopener noreferrer">${text}</a>`
-        : text;
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, href) => {
+      // href is already HTML-escaped; decode for scheme checks only.
+      const safe = safeMarkdownHref(decodeEntities(href));
+      if (!safe) return linkText;
+      return `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${linkText}</a>`;
     })
     .replace(/\n/g, '<br>');
 }
+/**
+ * Preserve only exact tags emitted by mdInline; neutralize any other raw tags.
+ * Never allowlist by tag name alone — raw <a> from model text is escaped.
+ * Residual text from mdInline is already entity-escaped; only raw < > are
+ * escaped here to avoid double-encoding &amp; / &lt;.
+ */
+function escapeLooseMarkdown(html) {
+  const tokenRe =
+    /(<\/strong>|<\/em>|<\/code>|<\/a>|<strong>|<em>|<code class="md-icode">|<br>|<a href="[^"]*" target="_blank" rel="noopener noreferrer">)/g;
+  const parts = String(html || '').split(tokenRe);
+  let out = '';
+  for (const part of parts) {
+    if (!part) continue;
+    if (
+      part === '</strong>' ||
+      part === '</em>' ||
+      part === '</code>' ||
+      part === '</a>' ||
+      part === '<strong>' ||
+      part === '<em>' ||
+      part === '<code class="md-icode">' ||
+      part === '<br>'
+    ) {
+      out += part;
+      continue;
+    }
+    const am = part.match(/^<a href="([^"]*)" target="_blank" rel="noopener noreferrer">$/);
+    if (am && safeMarkdownHref(am[1])) {
+      out += part;
+      continue;
+    }
+    out += part.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  return out;
+}
 function markdownToHtml(raw) {
   if (!raw) return '';
-  const lines = esc(raw).split('\n');
+  // mdInline escapes all raw input first; escapeLoose only keeps exact trusted tags.
+  const lines = String(raw).split('\n');
   const blocks = [];
   let i = 0;
   while (i < lines.length) {
@@ -166,12 +228,12 @@ function markdownToHtml(raw) {
         i++;
       }
       if (i < lines.length) i++;
-      blocks.push(`<pre class="md-pre"><code>${code.join('\n')}</code></pre>`);
+      blocks.push(`<pre class="md-pre"><code>${esc(code.join('\n'))}</code></pre>`);
       continue;
     }
     const h = lines[i].match(/^(#{1,6}) (.+)$/);
     if (h) {
-      blocks.push(`<h${h[1].length}>${mdInline(h[2])}</h${h[1].length}>`);
+      blocks.push(`<h${h[1].length}>${escapeLooseMarkdown(mdInline(h[2]))}</h${h[1].length}>`);
       i++;
       continue;
     }
@@ -179,7 +241,7 @@ function markdownToHtml(raw) {
       const items = [];
       let m;
       while (i < lines.length && (m = lines[i].match(/^[-*] (.+)$/))) {
-        items.push(`<li>${mdInline(m[1])}</li>`);
+        items.push(`<li>${escapeLooseMarkdown(mdInline(m[1]))}</li>`);
         i++;
       }
       blocks.push(`<ul>${items.join('')}</ul>`);
@@ -189,7 +251,7 @@ function markdownToHtml(raw) {
       const items = [];
       let m;
       while (i < lines.length && (m = lines[i].match(/^\d+\. (.+)$/))) {
-        items.push(`<li>${mdInline(m[1])}</li>`);
+        items.push(`<li>${escapeLooseMarkdown(mdInline(m[1]))}</li>`);
         i++;
       }
       blocks.push(`<ol>${items.join('')}</ol>`);
@@ -211,7 +273,7 @@ function markdownToHtml(raw) {
       para.push(lines[i]);
       i++;
     }
-    blocks.push(`<p>${mdInline(para.join('\n'))}</p>`);
+    blocks.push(`<p>${escapeLooseMarkdown(mdInline(para.join('\n')))}</p>`);
   }
   return blocks.join('');
 }
@@ -299,6 +361,12 @@ function applyProfileSettings(settings) {
   if (s.sessionSort === 'newest' || s.sessionSort === 'oldest') sessionSort = s.sessionSort;
   if (['off', 'balanced', 'maximum'].includes(s.contextMode)) contextMode = s.contextMode;
   if (['builtin', 'headroom'].includes(s.contextProvider)) contextProvider = s.contextProvider;
+  if (CONTEXT_POLICIES.includes(s.contextPolicy)) contextPolicy = s.contextPolicy;
+  if (s.autoRepair === true || s.autoRepair === false) autoRepair = s.autoRepair === true;
+  if (Number.isInteger(Number(s.repairIterations))) {
+    const n = Number(s.repairIterations);
+    if (n >= REPAIR_ITER_MIN && n <= REPAIR_ITER_MAX) repairIterations = n;
+  }
   if (['', 'low', 'medium', 'high', 'xhigh', 'max'].includes(s.directEffort || ''))
     directEffort = s.directEffort || '';
   if (s.theme === 'light' || s.theme === 'dark') applyTheme(s.theme);
@@ -309,6 +377,9 @@ function localProfileFallbackSettings() {
     sessionSort,
     contextMode,
     contextProvider,
+    contextPolicy,
+    autoRepair,
+    repairIterations,
     directEffort,
     activeTeamId: localStorage.getItem(ACTIVE_TEAM_KEY) || '',
     theme: currentTheme,
@@ -481,9 +552,11 @@ function renderContextSaverStatus(saver) {
     <div class="contextSaverGrid">
       <span>Provider</span><strong>${esc(contextProvider)}</strong>
       <span>Mode</span><strong>${esc(contextMode)}</strong>
+      <span>Privacy</span><strong>${esc(contextPolicy)}</strong>
       <span>Headroom</span><strong class="${hrClass}">${esc(hrState)}</strong>
       ${setupRows}
-    </div>`;
+    </div>
+    <div class="policyNotice">${esc(LOCAL_CONTROL_NOTICE)}</div>`;
 }
 function updateContextSaverUI() {
   const provSel = $('#contextProvider');
@@ -600,6 +673,8 @@ async function importProfileFile(file) {
     }
     $('#contextProvider').value = contextProvider;
     $('#contextMode').value = contextMode;
+    if ($('#contextPolicy')) $('#contextPolicy').value = contextPolicy;
+    updatePolicyNotice();
     populateComposerModels();
     populateEffortOptions();
     updateCaps();
@@ -641,6 +716,27 @@ async function loadOnboardingHealth() {
     renderOnboarding();
   }
 }
+function healthStatusText(p) {
+  if (!p) return 'Needs setup';
+  if (p.statusLabel) return p.statusLabel;
+  if (p.ready) return 'Ready';
+  if (p.status === 'missing_cli') return 'CLI missing';
+  if (p.status === 'version_too_old') return 'Version too old';
+  if (p.status === 'version_unknown') return 'Version unknown';
+  if (p.status === 'auth_not_confirmed') return 'Login not confirmed';
+  if (p.status === 'needs_key') return 'API key needed';
+  return 'Needs setup';
+}
+function healthIconClass(p) {
+  if (!p) return 'bad';
+  if (p.ready && p.status === 'version_unknown') return 'warn';
+  return p.ready ? 'ok' : 'bad';
+}
+function healthIconMark(p) {
+  if (!p) return '✗';
+  if (p.ready && p.status === 'version_unknown') return '!';
+  return p.ready ? '✓' : '✗';
+}
 function renderHealthRows() {
   if (onboardingLoading)
     return '<div class="healthList"><div class="healthRow"><div class="healthMeta">Checking providers...</div></div></div>';
@@ -653,12 +749,20 @@ function renderHealthRows() {
         p.kind === 'cli'
           ? `<code>${esc(cmd || '')}</code><button class="btn ghost onboardCopy" type="button" data-copy="${esc(cmd || '')}" title="Copy this setup command">Copy</button>`
           : `<button class="btn ghost onboardConnections" type="button" title="Open provider connection settings">Open Connections</button>`;
+      const statusText = healthStatusText(p);
+      const versionBits = [
+        p.version ? `v${String(p.version).replace(/^v/i, '').split(/\s+/)[0]}` : '',
+        p.minimumVersion ? `min ${p.minimumVersion}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      const showHint = !!(p.hint && (!p.ready || p.status === 'version_unknown'));
       return `<div class="healthRow">
-      <div class="healthIcon ${p.ready ? 'ok' : 'bad'}">${p.ready ? '✓' : '✗'}</div>
+      <div class="healthIcon ${healthIconClass(p)}">${healthIconMark(p)}</div>
       <div>
         <div class="healthName" style="color:${COLOR[p.id] || 'var(--text)'}">${esc(p.label)}</div>
-        <div class="healthMeta">${esc(p.kind.toUpperCase())} · ${p.ready ? 'Ready' : 'Needs setup'}</div>
-        ${p.ready ? '' : `<div class="healthHint">${esc(p.hint)}</div>`}
+        <div class="healthMeta">${esc(p.kind.toUpperCase())} · ${esc(statusText)}${versionBits ? ` · ${esc(versionBits)}` : ''}</div>
+        ${showHint ? `<div class="healthHint">${esc(p.hint)}</div>` : ''}
       </div>
       <div class="healthActions">${actions}</div>
     </div>`;
@@ -892,11 +996,15 @@ document.querySelectorAll('.panelTab').forEach((btn) => {
   btn.onclick = () => {
     switchRightTab(btn.dataset.tab);
     if (btn.dataset.tab === 'tasks') loadTasksPanel();
+    if (btn.dataset.tab === 'ledger') loadLedgerPanel();
   };
 });
 (function initRightTab() {
   const saved = localStorage.getItem(RIGHT_TAB_KEY);
-  if (saved && ['files', 'terminal', 'preview', 'changes', 'tasks', 'usage'].includes(saved))
+  if (
+    saved &&
+    ['files', 'terminal', 'preview', 'changes', 'tasks', 'usage', 'ledger'].includes(saved)
+  )
     switchRightTab(saved);
 })();
 
@@ -921,6 +1029,46 @@ function renderTaskCounts(counts) {
   );
 }
 
+function qualityBadgeHtml(gate) {
+  if (!gate || !gate.status) return '';
+  const status = String(gate.status);
+  const label = status === 'pass' ? 'Pass' : status === 'blocked' ? 'Blocked' : 'Incomplete';
+  return `<span class="qualityBadge ${esc(status)}" title="Evidence-based quality gate (rule-based; no model confidence %)">${esc(label)}</span>`;
+}
+
+function renderQualityPanel(gate, repair) {
+  if (!gate && !repair) return '';
+  const g = gate || {};
+  const reasons = (g.reasons || []).map((r) => `<li>${esc(r)}</li>`).join('');
+  const evidence = (g.evidence || [])
+    .map(
+      (e) =>
+        `<li class="qgEv ${esc(e.status || '')}"><span class="qgKind">${esc(e.kind || e.id || '')}</span> <span class="qgStatus">${esc(e.status || '')}</span> — ${esc(e.summary || '')}${e.optional ? ' <em>(optional)</em>' : ''}</li>`
+    )
+    .join('');
+  const score =
+    g.score && g.score.value != null
+      ? `<div class="qgScore muted">Secondary score: ${esc(String(g.score.value))}/${esc(String(g.score.max || 100))} (not used for pass/fail)</div>`
+      : '';
+  const repairLine =
+    repair && (repair.enabled || repair.attempt || repair.stopReason)
+      ? `<div class="qgRepair">Repair: ${repair.enabled ? 'opt-in on' : 'off'} · attempt ${esc(String(repair.attempt || 0))}/${esc(String(repair.maxIterations ?? REPAIR_ITER_DEFAULT))}${repair.stopReason ? ' · stop: ' + esc(repair.stopReason) : ''}${repair.status ? ' · ' + esc(repair.status) : ''}</div>`
+      : '';
+  return `<div class="qualityPanel">
+    <div class="qualityPanelHead">
+      <strong>Quality gate</strong>
+      ${qualityBadgeHtml(g)}
+      <span class="muted">v${esc(String(g.version || 1))}</span>
+    </div>
+    ${g.evaluatedAt ? `<div class="muted qgTs">${esc(g.evaluatedAt)}</div>` : ''}
+    ${reasons ? `<ul class="qgReasons">${reasons}</ul>` : ''}
+    ${evidence ? `<ul class="qgEvidence">${evidence}</ul>` : ''}
+    ${score}
+    ${repairLine}
+    <div class="muted qgNote">Rule-based evidence only — never model self-reported confidence.</div>
+  </div>`;
+}
+
 function renderTasksList(tasks) {
   const list = $('#tasksList');
   if (!tasks || !tasks.length) {
@@ -933,10 +1081,12 @@ function renderTasksList(tasks) {
       const deps = (task.dependencies || []).length
         ? `deps: ${task.dependencies.length}`
         : 'no deps';
+      const q = task.qualityGate ? qualityBadgeHtml(task.qualityGate) : '';
       return `<button type="button" class="taskRow${on}" data-task-id="${esc(task.id)}">
         <div class="taskRowTop">
           <span class="taskRowTitle">${esc(task.title)}</span>
           <span class="taskStatus ${esc(task.status)}">${esc(taskStatusLabel(task.status))}</span>
+          ${q}
         </div>
         <div class="taskRowMeta">${esc(task.owner || '')} · attempt ${esc(String(task.attempts || 0))} · ${esc(deps)}</div>
       </button>`;
@@ -958,12 +1108,16 @@ function renderTaskDetail(task) {
   const criteria = (task.acceptanceCriteria || []).length
     ? `<ul>${task.acceptanceCriteria.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`
     : '<span class="muted">—</span>';
+  const review = task.reviewResult
+    ? `<dd>${esc(task.reviewResult.verdict || '—')} · parse ${esc(task.reviewResult.parseStatus || '—')} · ${(task.reviewResult.findings || []).length} finding(s)</dd>`
+    : '<dd class="muted">—</dd>';
   const evidence = (task.evidence || [])
     .slice(-6)
     .map((e) => JSON.stringify(e, null, 2))
     .join('\n\n');
   box.innerHTML =
-    `<h3>${esc(task.title)}</h3>` +
+    `<h3>${esc(task.title)} ${qualityBadgeHtml(task.qualityGate)}</h3>` +
+    renderQualityPanel(task.qualityGate, task.repair) +
     `<dl>
       <dt>Status</dt><dd>${esc(taskStatusLabel(task.status))}${task.statusReason ? ' — ' + esc(task.statusReason) : ''}</dd>
       <dt>Objective</dt><dd>${esc(task.objective || '')}</dd>
@@ -973,6 +1127,7 @@ function renderTaskDetail(task) {
       <dt>Attempts</dt><dd>${esc(String(task.attempts || 0))}</dd>
       <dt>Updated</dt><dd>${esc(task.updatedAt || '')}</dd>
       <dt>Worktree</dt><dd>${esc(task.worktreeId || '—')}</dd>
+      <dt>Review</dt>${review}
       <dt>Acceptance</dt><dd>${criteria}</dd>
     </dl>` +
     (evidence
@@ -1434,14 +1589,36 @@ function renderProviderOptions() {
   ).join('');
 }
 
-async function refreshModelCatalog() {
+function setTeamModelRefreshStatus(text, level = '') {
+  const status = $('#teamModelRefreshStatus');
+  if (!status) return;
+  status.textContent = text;
+  status.className = `teamModelRefreshStatus${level ? ` ${level}` : ''}`;
+}
+
+function modelRefreshFailures(catalog) {
+  return (catalog || []).filter((adapter) => adapter.modelRefreshError);
+}
+
+async function requestFreshModelCatalog() {
+  if (!modelCatalogRefreshPromise) {
+    modelCatalogRefreshPromise = api('/api/catalog/refresh').finally(() => {
+      modelCatalogRefreshPromise = null;
+    });
+  }
+  return modelCatalogRefreshPromise;
+}
+
+async function refreshModelCatalog(options = {}) {
+  const { announce = true, teamDialog = false } = options;
   const button = $('#refreshModels');
   const selectedProviderId = $('#provider').value;
   const selectedModel = $('#model').value;
   button.disabled = true;
   button.classList.add('loading');
+  if (teamDialog) setTeamModelRefreshStatus('Refreshing models...', 'loading');
   try {
-    CAT = await api('/api/catalog/refresh');
+    CAT = await requestFreshModelCatalog();
     renderProviderOptions();
     if (selectedProviderId && CAT.some((a) => a.id === selectedProviderId)) {
       $('#provider').value = selectedProviderId;
@@ -1451,9 +1628,26 @@ async function refreshModelCatalog() {
     populateReviewModels();
     refreshTeamModelSelects();
     updateCaps();
-    notify('Model list refreshed from local CLIs.', 'info');
+    const failures = modelRefreshFailures(CAT);
+    if (teamDialog) {
+      setTeamModelRefreshStatus(
+        failures.length ? `Updated; ${failures.length} using saved list` : 'Models updated',
+        failures.length ? 'warn' : ''
+      );
+    }
+    if (announce) {
+      notify(
+        failures.length
+          ? `Models refreshed; ${failures.length} provider${failures.length === 1 ? '' : 's'} used the saved list.`
+          : 'Model list refreshed from local CLIs.',
+        failures.length ? 'warn' : 'info'
+      );
+    }
+    return true;
   } catch {
-    notify('Unable to refresh models from local CLIs.');
+    if (teamDialog) setTeamModelRefreshStatus('Using saved models', 'warn');
+    if (announce) notify('Unable to refresh models from local CLIs.');
+    return false;
   } finally {
     button.disabled = false;
     button.classList.remove('loading');
@@ -1509,6 +1703,39 @@ async function refreshModelCatalog() {
     localStorage.setItem(CONTEXT_MODE_KEY, contextMode);
     saveProfileSettings({ contextMode });
   };
+  const policySel = $('#contextPolicy');
+  if (policySel) {
+    policySel.value = contextPolicy;
+    policySel.onchange = () => {
+      contextPolicy = policySel.value;
+      if (!CONTEXT_POLICIES.includes(contextPolicy)) contextPolicy = 'relevant-only';
+      localStorage.setItem(CONTEXT_POLICY_KEY, contextPolicy);
+      saveProfileSettings({ contextPolicy });
+      updatePolicyNotice();
+    };
+    updatePolicyNotice();
+  }
+  const autoRepairEl = $('#autoRepair');
+  if (autoRepairEl) {
+    autoRepairEl.checked = !!autoRepair;
+    autoRepairEl.onchange = () => {
+      autoRepair = !!autoRepairEl.checked;
+      localStorage.setItem(AUTO_REPAIR_KEY, autoRepair ? '1' : '0');
+      saveProfileSettings({ autoRepair });
+    };
+  }
+  const repairIterEl = $('#repairIterations');
+  if (repairIterEl) {
+    repairIterEl.value = String(repairIterations);
+    repairIterEl.onchange = () => {
+      const n = Number(repairIterEl.value);
+      if (Number.isInteger(n) && n >= REPAIR_ITER_MIN && n <= REPAIR_ITER_MAX) {
+        repairIterations = n;
+        localStorage.setItem(REPAIR_ITER_KEY, String(n));
+        saveProfileSettings({ repairIterations: n });
+      }
+    };
+  }
   $('#topStop').onclick = stopRun;
   $('#themeToggle').onclick = toggleTheme;
   const advToggle = $('#advToggle');
@@ -1547,6 +1774,21 @@ async function refreshModelCatalog() {
   if (!localStorage.getItem(ONBOARD_KEY)) openOnboarding();
 })();
 
+function updatePolicyNotice() {
+  const el = $('#policyNotice');
+  if (!el) return;
+  if (contextPolicy === 'full-workspace') {
+    el.hidden = false;
+    el.className = 'policyNotice warn';
+    el.textContent =
+      'Full workspace: the provider may see a broader workspace listing. Sensitive/ignored paths are still excluded. ' +
+      LOCAL_CONTROL_NOTICE;
+  } else {
+    el.hidden = false;
+    el.className = 'policyNotice';
+    el.textContent = LOCAL_CONTROL_NOTICE;
+  }
+}
 function selectedProvider() {
   return CAT.find((x) => x.id === $('#provider').value);
 }
@@ -1609,9 +1851,20 @@ function providerReadiness(id) {
 function providerReadyLabel(id) {
   const h = providerReadiness(id);
   if (!h) return { status: 'warn', text: `${id}: readiness unknown` };
-  return h.ready
-    ? { status: 'ok', text: `${id}: ready` }
-    : { status: 'bad', text: `${id}: setup needed` };
+  if (h.ready && h.status === 'version_unknown')
+    return { status: 'warn', text: `${id}: version unknown` };
+  if (h.ready) return { status: 'ok', text: `${id}: ready` };
+  const detail =
+    h.status === 'missing_cli'
+      ? 'CLI missing'
+      : h.status === 'version_too_old'
+        ? 'version too old'
+        : h.status === 'auth_not_confirmed'
+          ? 'login not confirmed'
+          : h.status === 'needs_key'
+            ? 'API key needed'
+            : 'setup needed';
+  return { status: 'bad', text: `${id}: ${detail}` };
 }
 function preflightItems() {
   const items = [];
@@ -1674,10 +1927,24 @@ function updateCaps() {
   if (a) {
     const h = providerReadiness(a.id);
     let badge = '';
-    if (h)
-      badge = h.ready
-        ? ' · <span class="provReady">● ready</span>'
-        : ' · <span class="provNotReady">● needs setup</span>';
+    if (h) {
+      if (h.ready && h.status === 'version_unknown')
+        badge = ' · <span class="provWarn">● version unknown</span>';
+      else if (h.ready) badge = ' · <span class="provReady">● ready</span>';
+      else {
+        const detail =
+          h.status === 'missing_cli'
+            ? 'CLI missing'
+            : h.status === 'version_too_old'
+              ? 'version too old'
+              : h.status === 'auth_not_confirmed'
+                ? 'login needed'
+                : h.status === 'needs_key'
+                  ? 'key needed'
+                  : 'needs setup';
+        badge = ` · <span class="provNotReady">● ${esc(detail)}</span>`;
+      }
+    }
     const effortText = modelEffortLevels().length
       ? ` · effort: ${esc($('#effort').value || 'default')}`
       : '';
@@ -1723,6 +1990,18 @@ function anyProviderReady() {
 function providersKnown() {
   return Array.isArray(onboardingHealth);
 }
+function providerBlockReason(h, label) {
+  if (!h || h.ready) return '';
+  const name = label || h.label || h.id || 'Provider';
+  if (h.status === 'missing_cli')
+    return `${name} CLI is not installed. Open Connections for setup.`;
+  if (h.status === 'version_too_old')
+    return `${name} CLI is too old${h.minimumVersion ? ` (need ${h.minimumVersion}+)` : ''}. Update it, then refresh.`;
+  if (h.status === 'auth_not_confirmed')
+    return `${name} login is not confirmed. Sign in via Connections, then refresh.`;
+  if (h.status === 'needs_key') return `${name} needs an API key in Connections.`;
+  return `${name} needs setup before it can run. Open Connections for setup steps.`;
+}
 function firstBlocker() {
   if (providersKnown() && !anyProviderReady())
     return {
@@ -1735,7 +2014,7 @@ function firstBlocker() {
   const h = a && providerReadiness(a.id);
   if (providersKnown() && h && !h.ready)
     return {
-      reason: `${a.label || a.id} needs setup before it can run. Open Connections for setup steps.`,
+      reason: providerBlockReason(h, a.label || a.id),
       action: 'connections',
     };
   return null;
@@ -1763,10 +2042,24 @@ function emptyStateHtml() {
   const provDone = anyProviderReady();
   const wsDone = !!state.ws;
   const notRepo = wsDone && activity.notRepo;
+  let provHint = 'Click here to open Connections and sign in to Claude, Codex, or Grok.';
+  if (provDone) {
+    const warn = Array.isArray(onboardingHealth)
+      ? onboardingHealth.find((p) => p && p.ready && p.status === 'version_unknown')
+      : null;
+    provHint = warn
+      ? `${warn.label || warn.id} is present but its version could not be parsed — update recommended.`
+      : 'A provider is signed in and ready.';
+  } else if (Array.isArray(onboardingHealth) && onboardingHealth.length) {
+    const issues = onboardingHealth
+      .filter((p) => p && !p.ready)
+      .map((p) => `${p.label || p.id}: ${healthStatusText(p).toLowerCase()}`);
+    if (issues.length) provHint = issues.slice(0, 3).join(' · ') + '. Click to open Connections.';
+  }
   return `<div class="firstRun">
     <h2>Welcome to Crew Forge</h2>
     <p class="firstRunSub">Run AI coding models against a local folder — solo or as a delegated team. Three steps to your first run:</p>
-    ${checklistRow(provDone, 'Connect a model', provDone ? 'A provider is signed in and ready.' : 'Click here to open Connections and sign in to Claude, Codex, or Grok.', 'connect')}
+    ${checklistRow(provDone, 'Connect a model', provHint, 'connect')}
     ${checklistRow(wsDone, 'Pick a workspace', wsDone ? 'Working in this folder.' : 'Click here to add a folder. Tip: choose a git repo so Edit, diffs, review, and teams all work.', 'workspace')}
     ${checklistRow(false, 'Send your first prompt', notRepo ? 'Heads-up: this folder isn’t a git repo, so Edit / diff / review and team approval are limited. Plan mode and team planning still work.' : 'Plan mode is read-only and safe. Switch to Edit to let the model change files.')}
   </div>`;
@@ -2065,10 +2358,11 @@ function resolveIntegrationCards(worktreeId, resolution) {
     });
 }
 
-async function integratePendingWorktree(worktreeId, card) {
+async function integratePendingWorktree(worktreeId, card, overrideReason) {
   if (!state.ws || !state.sid) return notify('Select a workspace and session first.');
   if (integrationBusy.has(worktreeId)) return;
   if (
+    !overrideReason &&
     !window.confirm(
       'Integrate these changes into your main workspace checkout? Review the diff first; undo via Git if needed.'
     )
@@ -2077,10 +2371,12 @@ async function integratePendingWorktree(worktreeId, card) {
   integrationBusy.add(worktreeId);
   setIntegrationCardBusy(card, true);
   try {
+    const body = { ws: state.ws, sid: state.sid, worktreeId };
+    if (overrideReason) body.overrideReason = overrideReason;
     const r = await api('/api/worktree/integrate', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ws: state.ws, sid: state.sid, worktreeId }),
+      body: JSON.stringify(body),
     });
     if (r.status === 'integrated') {
       if (card) {
@@ -2091,6 +2387,25 @@ async function integratePendingWorktree(worktreeId, card) {
       }
       notify('Changes integrated.');
       loadChanges();
+      scheduleTasksRefresh();
+      return;
+    }
+    if (r.status === 'quality-gate-blocked') {
+      const reasons =
+        (r.qualityGate && r.qualityGate.reasons && r.qualityGate.reasons.join('; ')) ||
+        r.error ||
+        'Quality gate blocked integration';
+      const reason = window.prompt(
+        `Quality gate blocked integration (${(r.qualityGate && r.qualityGate.status) || 'blocked'}):\n${reasons}\n\nEnter an explicit override reason to integrate anyway, or Cancel:`,
+        ''
+      );
+      if (reason && reason.trim()) {
+        integrationBusy.delete(worktreeId);
+        setIntegrationCardBusy(card, false);
+        return integratePendingWorktree(worktreeId, card, reason.trim().slice(0, 280));
+      }
+      notify(r.error || 'Integration blocked by quality gate.');
+      scheduleTasksRefresh();
       return;
     }
     notify(r.error || 'Integration failed — worktree kept for review.');
@@ -2203,6 +2518,78 @@ function integrationFailedHtml(e) {
   </div>`;
 }
 
+function continuationCapsuleHtml(e) {
+  const meta = e.meta || {};
+  const id = esc(meta.capsuleId || '');
+  const reason = esc(meta.reason || 'incomplete');
+  const policy = esc(meta.contextPolicy || contextPolicy);
+  const provider = esc($('#provider') ? $('#provider').value : '');
+  const model = esc($('#model') ? $('#model').value : '');
+  return `<div class="integrationCard capsuleCard" data-capsule-id="${id}">
+    <div class="integrationHead"><span class="integrationTitle">Continuation capsule · ${reason}</span></div>
+    <div class="integrationSummary">Policy: ${policy} · Resume with selected provider/model (no automatic switch)</div>
+    <div class="integrationNote">${esc(meta.notice || LOCAL_CONTROL_NOTICE)}</div>
+    <div class="integrationActions">
+      <button type="button" class="integrationAct capsuleResume" title="Resume with the provider, model, effort, and mode currently selected in the composer">Resume with… ${provider}${model ? ' · ' + model : ''}</button>
+    </div>
+  </div>`;
+}
+
+function wireCapsuleCard(el) {
+  if (!el) return;
+  const btn = el.querySelector('.capsuleResume');
+  if (!btn) return;
+  btn.onclick = () => resumeCapsule(el.dataset.capsuleId);
+}
+
+async function resumeCapsule(capsuleId) {
+  if (!capsuleId) return notify('Missing capsule id');
+  if (!state.ws || !state.sid) return notify('Select a workspace and session first');
+  if (state.activeRun) return notify('A run is already active in this session.');
+  const block = firstBlocker();
+  if (block) {
+    notify(block.reason);
+    if (block.action === 'connections') openConnections();
+    return;
+  }
+  if (state.mode === 'edit' && activity.notRepo) {
+    return notify('Edit mode resume requires a git workspace.');
+  }
+  setRunActive(true);
+  startActivityPoll();
+  try {
+    const r = await api('/api/capsules/resume', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ws: state.ws,
+        sid: state.sid,
+        capsuleId,
+        adapter: $('#provider').value,
+        model: $('#model').value,
+        effort: $('#effort').value,
+        mode: state.mode,
+        contextMode,
+        contextProvider,
+        contextPolicy,
+      }),
+    });
+    if (r.error) {
+      setRunActive(false);
+      stopActivityPoll();
+      return notify(r.error);
+    }
+    notify(
+      `Resuming with ${$('#provider').value}${$('#model').value ? ' · ' + $('#model').value : ''}`
+    );
+    loadUsage();
+  } catch (_e) {
+    setRunActive(false);
+    stopActivityPoll();
+    notify('Unable to resume capsule.');
+  }
+}
+
 function render(e) {
   const f = feedEl();
   if (f.querySelector('.empty')) f.innerHTML = '';
@@ -2274,6 +2661,29 @@ function render(e) {
       }
       setRunActive(false);
       stopActivityPoll();
+      return;
+    }
+    if (type === 'continuation-capsule') {
+      const el = appendHTML(continuationCapsuleHtml(e));
+      wireCapsuleCard(el);
+      setRunActive(false);
+      stopActivityPoll();
+      return;
+    }
+    if (type === 'quality-gate') {
+      const qg = meta && meta.qualityGate;
+      const badge = qg ? qualityBadgeHtml(qg) : '';
+      appendHTML(
+        `<div class="status qualityGateStatus">⚖ ${esc(text || 'Quality gate')}${badge ? ' ' + badge : ''}</div>`
+      );
+      scheduleTasksRefresh();
+      return;
+    }
+    if (type === 'review-verdict') {
+      appendHTML(
+        `<div class="status reviewVerdictStatus">✓ ${esc(text || 'Review verdict')}</div>`
+      );
+      scheduleTasksRefresh();
       return;
     }
     if (type === 'error') {
@@ -2454,6 +2864,7 @@ async function send() {
         prompt,
         contextMode,
         contextProvider,
+        contextPolicy,
       }),
     });
     if (r.error) {
@@ -2563,6 +2974,98 @@ async function loadUsage() {
     renderUsage(data);
   } catch {}
 }
+
+// ---------- execution ledger (right panel) ----------
+const ledgerUi = { loading: false, error: '', entries: [], total: 0 };
+
+function ledgerTime(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n)) return '';
+  try {
+    return new Date(n).toLocaleString();
+  } catch {
+    return '';
+  }
+}
+
+function renderLedger() {
+  const list = $('#ledgerList');
+  const summary = $('#ledgerSummary');
+  if (!list || !summary) return;
+  if (ledgerUi.loading) {
+    summary.innerHTML = '<div class="ledgerEmpty">Loading ledger…</div>';
+    list.innerHTML = '';
+    return;
+  }
+  if (ledgerUi.error) {
+    summary.innerHTML = `<div class="ledgerEmpty">${esc(ledgerUi.error)}</div>`;
+    list.innerHTML = '';
+    return;
+  }
+  if (!ledgerUi.entries.length) {
+    summary.innerHTML =
+      '<div class="ledgerEmpty">No ledger entries for this scope yet. Runs, approvals, and integrations appear here.</div>';
+    list.innerHTML = '';
+    return;
+  }
+  summary.innerHTML = `<div class="ledgerCounts">Showing ${ledgerUi.entries.length} of ${ledgerUi.total}</div>`;
+  list.innerHTML = ledgerUi.entries
+    .map((e) => {
+      const title = [e.transition, e.outcome].filter(Boolean).join(' · ');
+      const meta = [e.provider || e.actor, e.model, e.mode, e.step != null ? `step ${e.step}` : '']
+        .filter(Boolean)
+        .join(' · ');
+      return `<div class="ledgerRow">
+        <div class="ledgerWhen">${esc(ledgerTime(e.timestamp))}</div>
+        <div class="ledgerTitle">${esc(title)}</div>
+        <div class="ledgerMeta">${esc(meta)}</div>
+        ${e.summary ? `<div class="ledgerSummaryText">${esc(e.summary)}</div>` : ''}
+        ${e.decision ? `<div class="ledgerDecision">decision: ${esc(e.decision)}</div>` : ''}
+      </div>`;
+    })
+    .join('');
+}
+
+async function loadLedgerPanel() {
+  ledgerUi.loading = true;
+  ledgerUi.error = '';
+  renderLedger();
+  try {
+    const qs = new URLSearchParams();
+    if (state.ws) qs.set('ws', state.ws);
+    if (state.sid) qs.set('sid', state.sid);
+    qs.set('limit', '80');
+    const data = await api('/api/ledger?' + qs.toString());
+    ledgerUi.entries = Array.isArray(data.entries) ? data.entries : [];
+    ledgerUi.total = Number(data.total) || ledgerUi.entries.length;
+  } catch (e) {
+    ledgerUi.entries = [];
+    ledgerUi.total = 0;
+    ledgerUi.error = (e && e.message) || 'Unable to load ledger';
+  } finally {
+    ledgerUi.loading = false;
+    renderLedger();
+  }
+}
+
+function ledgerExportUrl(format) {
+  const qs = new URLSearchParams();
+  if (state.ws) qs.set('ws', state.ws);
+  if (state.sid) qs.set('sid', state.sid);
+  qs.set('format', format);
+  qs.set('limit', '2000');
+  return '/api/ledger/export?' + qs.toString();
+}
+
+$('#ledgerRefresh') && ($('#ledgerRefresh').onclick = () => loadLedgerPanel());
+$('#ledgerExportJson') &&
+  ($('#ledgerExportJson').onclick = () => {
+    window.open(ledgerExportUrl('json'), '_blank', 'noopener');
+  });
+$('#ledgerExportCsv') &&
+  ($('#ledgerExportCsv').onclick = () => {
+    window.open(ledgerExportUrl('csv'), '_blank', 'noopener');
+  });
 
 // ---------- activity ----------
 function statusClass(status) {
@@ -2733,6 +3236,9 @@ async function startReview() {
         reviewerModel,
         contextMode,
         contextProvider,
+        contextPolicy,
+        autoRepair,
+        repairIterations,
       }),
     });
     if (r.error) {
@@ -2854,22 +3360,36 @@ async function loadSkills() {
 }
 
 function modelOptions(selected) {
-  return CAT.map((a) => {
+  const selectedAdapter = String((selected && selected.adapter) || '');
+  const selectedModel = String((selected && selected.model) || '');
+  let selectedFound = false;
+  const options = CAT.map((a) => {
     const textOnly = a.canEdit ? '' : ' (text only)';
     return a.models
-      .map(
-        (m) =>
-          `<option value="${a.id}|${esc(m)}" ${selected && selected.adapter === a.id && selected.model === m ? 'selected' : ''}>${esc(a.label)} · ${esc(m)}${textOnly}</option>`
-      )
+      .map((m) => {
+        const isSelected = selectedAdapter === a.id && selectedModel === m;
+        if (isSelected) selectedFound = true;
+        return `<option value="${a.id}|${esc(m)}" ${isSelected ? 'selected' : ''}>${esc(a.label)} · ${esc(m)}${textOnly}</option>`;
+      })
       .join('');
   }).join('');
+  if (!selectedAdapter || !selectedModel || selectedFound) return options;
+  const adapter = CAT.find((entry) => entry.id === selectedAdapter);
+  const label = adapter ? adapter.label : selectedAdapter;
+  return `<option value="${esc(selectedAdapter)}|${esc(selectedModel)}" selected>${esc(label)} · ${esc(selectedModel)} (unavailable)</option>${options}`;
 }
 function refreshTeamModelSelects() {
   const selects = [...document.querySelectorAll('.memberModel')];
   for (const select of selects) {
     const selected = select.value;
-    select.innerHTML = modelOptions(null);
-    if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+    const separator = selected.indexOf('|');
+    const member =
+      separator > 0
+        ? { adapter: selected.slice(0, separator), model: selected.slice(separator + 1) }
+        : null;
+    select.innerHTML = modelOptions(member);
+    if (selected) select.value = selected;
+    updateMemberHint(select.closest('.teamRow'));
   }
 }
 function skillOptions(selectedId) {
@@ -3026,15 +3546,32 @@ function reindexLeadRadios() {
 function openTeamModal(team) {
   editingTeam = team
     ? { ...team, members: (team.members || []).map((m) => ({ ...m })) }
-    : { id: null, name: '', members: [], leadIndex: 0 };
+    : {
+        id: null,
+        name: '',
+        members: [],
+        leadIndex: 0,
+        autoRepair: false,
+        repairIterations: repairIterations,
+      };
   $('#teamModalTitle').textContent = team ? 'Edit team' : 'New team';
   $('#teamName').value = editingTeam.name || '';
   $('#teamDelete').style.display = team ? 'inline-block' : 'none';
   $('#teamMembers').innerHTML = '';
   if (editingTeam.members.length) editingTeam.members.forEach((m, i) => addMemberRow(m, i));
   else addMemberRow(null, 0);
+  const teamAuto = $('#teamAutoRepair');
+  const teamIter = $('#teamRepairIterations');
+  if (teamAuto) teamAuto.checked = !!editingTeam.autoRepair;
+  if (teamIter) {
+    const n = Number.isInteger(Number(editingTeam.repairIterations))
+      ? Number(editingTeam.repairIterations)
+      : REPAIR_ITER_DEFAULT;
+    teamIter.value = String(Math.min(REPAIR_ITER_MAX, Math.max(REPAIR_ITER_MIN, n)));
+  }
   $('#teamModal').classList.add('show');
   $('#teamName').focus();
+  refreshModelCatalog({ announce: false, teamDialog: true });
 }
 function collectTeamFromModal() {
   const rows = [...$('#teamMembers').querySelectorAll('.teamRow')];
@@ -3054,11 +3591,20 @@ function collectTeamFromModal() {
     (r) => r.checked
   );
   if (leadIndex < 0 && members.length) leadIndex = 0;
+  let teamRepairIterations = REPAIR_ITER_DEFAULT;
+  const teamIter = $('#teamRepairIterations');
+  if (teamIter) {
+    const n = Number(teamIter.value);
+    if (Number.isInteger(n) && n >= REPAIR_ITER_MIN && n <= REPAIR_ITER_MAX)
+      teamRepairIterations = n;
+  }
   return {
     id: editingTeam.id,
     name: $('#teamName').value.trim() || 'Untitled team',
     members,
     leadIndex,
+    autoRepair: !!($('#teamAutoRepair') && $('#teamAutoRepair').checked),
+    repairIterations: teamRepairIterations,
   };
 }
 async function loadTeams() {
@@ -3150,7 +3696,10 @@ async function delegateToTeam() {
         prompt,
         contextMode,
         contextProvider,
+        contextPolicy,
         mode: state.mode,
+        autoRepair: team.autoRepair === true ? true : autoRepair,
+        repairIterations: team.repairIterations != null ? team.repairIterations : repairIterations,
       }),
     });
     if (r.cancelled) {
@@ -3206,6 +3755,9 @@ async function approvePlan() {
         mode: state.mode,
         contextMode,
         contextProvider,
+        contextPolicy,
+        autoRepair,
+        repairIterations,
       }),
     });
     if (r.error) {

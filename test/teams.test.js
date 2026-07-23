@@ -7,7 +7,7 @@ const test = require('node:test');
 
 const teams = require('../lib/teams');
 
-const teamsFile = path.join(__dirname, '..', 'data', 'teams.json');
+const teamsFile = path.join(require('../lib/data_dir'), 'teams.json');
 
 function readTeamsRaw() {
   try {
@@ -45,6 +45,22 @@ test('saveTeam mints an id when absent and persists', (t) => {
     teams.listTeams().some((team) => team.id === saved.id),
     true
   );
+});
+
+test('nested team mutations do not lose writes (reentrant lock)', (t) => {
+  const before = readTeamsRaw();
+  t.after(() => restoreTeams(before));
+
+  const outer = teams.saveTeam({ name: 'Outer' });
+  teams.mutateTeamsFile((list) => {
+    const idx = list.findIndex((x) => x.id === outer.id);
+    list[idx] = { ...list[idx], name: 'Outer-mut' };
+    // Nested save shares the same in-memory list; both changes must persist.
+    teams.saveTeam({ id: outer.id, name: 'Outer-nested', members: [], leadIndex: 0 });
+    return true;
+  });
+  const loaded = teams.getTeam(outer.id);
+  assert.equal(loaded.name, 'Outer-nested');
 });
 
 test('saveTeam with a provided valid id upserts', (t) => {

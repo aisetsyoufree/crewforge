@@ -30,6 +30,15 @@ Crew Forge 0.1.0-beta.2 renamed old internal `mmo` local state to `crewforge`. T
 - Confirm one project row appears with one task per approved plan step.
 - Approve a plan with an edit-capable member in a Git repo; when a step pauses for integration, the task should show **review** until you integrate or reject.
 - The tracker is read-only in the UI — report incorrect status as a bug rather than expecting manual edits.
+- Each task may show a **quality gate** badge (`pass` / `blocked` / `incomplete`) with reasons and evidence. This is rule-based from persisted evidence — never a model confidence percentage.
+- Integration is blocked when the gate is blocked/incomplete unless you provide an explicit override reason (recorded in evidence + ledger).
+
+## Review, quality gates, and repair
+
+- **Review changes** should end with a structured `PASS` or `REQUEST_CHANGES` verdict when the model follows the prompt. If parsing fails, the gate marks review evidence **incomplete** (not pass).
+- **Auto-repair** is opt-in and **off by default** (Context settings + team advanced). Max repair iterations default to 2 (0–5, hard cap 5).
+- When auto-repair is on and a review returns `REQUEST_CHANGES` for an edit task, one bounded repair attempt runs on the **original** implementer/provider/model. There is no silent provider failover.
+- Leave auto-repair off unless you are intentionally testing the loop.
 
 ## Smoke Test Flow
 
@@ -44,16 +53,17 @@ Summarize this repository and suggest one safe improvement.
 
 5. Confirm the response streams into the session.
 6. Select the session and use the download button beside **Sessions** to export a CSV. Confirm it opens with timestamp, actor, model, type, text, and metadata columns.
-7. Send a small Edit-mode prompt in a disposable repo:
+7. Open the **Ledger** right-panel tab, refresh, and confirm a redacted run/stop entry appears (no raw prompt text). Optionally download JSON/CSV.
+8. Send a small Edit-mode prompt in a disposable repo:
 
 ```text
 Add a short sentence to the README explaining the project purpose.
 ```
 
-7. Confirm the Activity panel shows changed files and a diff.
-8. Run **Review changes** with another provider if available.
-9. Create a small team with a lead, a planner, and an engineer.
-10. Delegate a small objective and verify that the plan can be reviewed before approval.
+9. Confirm the Activity panel shows changed files and a diff.
+10. Run **Review changes** with another provider if available.
+11. Create a small team with a lead, a planner, and an engineer.
+12. Delegate a small objective and verify that the plan can be reviewed before approval.
 
 ## What To Report
 

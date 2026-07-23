@@ -1,0 +1,5 @@
+{"type":"thought","data":"thinking"}
+{"type":"command","command":"npm test"}
+{"type":"file_change","data":"updated","path":"app.js"}
+{"type":"text","data":"done"}
+{"type":"end","stopReason":"complete"}
